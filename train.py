@@ -70,6 +70,14 @@ def parse_args():
         default=None,
         help="options: [inference, pytorch], or leave it unset",
     )
+    parser.add_argument(
+        "--resume",
+        type=lambda x: bool(strtobool(x)),
+        nargs="?",
+        const=True,
+        default=False,
+        help="Resume training from checkpoint (--ckpt_path)"
+    )
 
     return parser.parse_args()
 
@@ -113,14 +121,13 @@ def main():
     ckpt_dir = Path(logger.log_dir) / "checkpoints"
 
     # Callbacks
-    # TODO: update ModelCheckpoint to monitor multiple metrics
     ckpt_callback = ModelCheckpoint(
         monitor="auc@10",
         verbose=True,
         save_top_k=10,
         mode="max",
         save_last=True,
-        save_weights_only=True,
+        save_weights_only=False, # save the whole model
         dirpath=str(ckpt_dir),
         filename="{epoch}-{auc@5:.3f}-{auc@10:.3f}-{auc@20:.3f}",
     )
@@ -148,8 +155,8 @@ def main():
         profiler=profiler,
     )
     loguru_logger.info(f"Trainer initialized!")
-    loguru_logger.info(f"Start training!")
-    trainer.fit(model, datamodule=data_module, ckpt_path=None)
+    loguru_logger.info(f"Start training! (If resume is True, it will load the checkpoint from {args.ckpt_path})")
+    trainer.fit(model, datamodule=data_module, ckpt_path=args.ckpt_path if args.resume else None)
 
 
 if __name__ == "__main__":

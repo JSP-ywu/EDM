@@ -12,12 +12,13 @@ data_cfg_path="configs/data/megadepth_trainval_${TRAIN_IMG_SIZE}.py"
 main_cfg_path="configs/edm/outdoor/edm_base.py"
 
 n_nodes=1
-n_gpus_per_node=8
+n_gpus_per_node=4
 torch_num_workers=8
-batch_size=4
+batch_size=8
 pin_memory=true
 exp_name="edm_outdoor"
 ckpt=""
+resume=False
 
 python -u ./train.py \
     ${data_cfg_path} \
@@ -30,6 +31,7 @@ python -u ./train.py \
     --num_workers=${torch_num_workers} \
     --pin_memory=${pin_memory} \
     --ckpt_path=${ckpt} \
+    --resume=${resume}\
     --check_val_every_n_epoch=1 \
     --log_every_n_steps=500 \
     --num_sanity_val_steps=10 \
