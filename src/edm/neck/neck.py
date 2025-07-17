@@ -154,3 +154,32 @@ class CIM(nn.Module):
             feat_c1 = f8
 
         return feat_c0, feat_c1
+
+class DepthFeatureInjection(nn.Module):
+    """Inject DepthAnythingV2 features into EDM via cross-attention or projection"""
+
+    def __init__(self, in_dim, out_dim, cross_attn=True):
+        super().__init__()
+        self.cross_attn = cross_attn
+
+        self.proj0 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
+        self.proj1 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
+
+        if cross_attn:
+            self.attn = LocalFeatureTransformer({
+                "layer_names": ["self", "cross"] * 2,
+                "cross_attention": True,
+                "heads": 4,
+                "dim": out_dim,
+                "depth": 2
+            })
+
+    def forward(self, depth0, depth1, mask0=None, mask1=None):
+        # depth0, depth1: [N, C_in, H, W]
+        d0 = self.proj0(depth0)
+        d1 = self.proj1(depth1)
+
+        if self.cross_attn:
+            d0, d1 = self.attn(d0, d1, mask0, mask1)
+
+        return d0 + depth0, d1 + depth1  # residual fusion

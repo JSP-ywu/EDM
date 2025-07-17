@@ -16,7 +16,7 @@ n_gpus_per_node=1
 torch_num_workers=8
 batch_size=1
 
-ckpt_path="weights/edm_outdoor.ckpt"
+ckpt_path="/workspace/EDM/logs/tb_logs/edm_outdoor/version_6/checkpoints/epoch=29-auc@5=0.551-auc@10=0.710-auc@20=0.826.ckpt"
 
 python -u ./test.py \
     ${data_cfg_path} \
