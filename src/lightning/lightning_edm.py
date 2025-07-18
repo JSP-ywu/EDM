@@ -46,6 +46,10 @@ class PL_EDM(pl.LightningModule):
         self.matcher = EDM(config=_config["edm"])
         self.loss = EDMLoss(_config)
 
+        # Freeze depth extractor
+        self.matcher.depth_extractor.requires_grad_(False)
+        self.matcher.depth_extractor.eval()
+
         # Pretrained weights
         if pretrained_ckpt:
             state_dict = torch.load(pretrained_ckpt, map_location="cpu")[
@@ -180,7 +184,7 @@ class PL_EDM(pl.LightningModule):
 
     def on_after_backward(self) -> None:
         for n, p in self.named_parameters():
-            if p.grad is None:
+            if p.requires_grad and p.grad is None:
                 print(n)
         return super().on_after_backward()
 

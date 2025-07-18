@@ -107,7 +107,12 @@ class CIM(nn.Module):
                 depth0, depth1 = depth_feats
                 depth0, depth1 = self.depth_injector(depth0, depth1, mask_c0, mask_c1)
                 f8, f16, f32 = rgb_feats
-                f8 = f8 + depth0  # inject at 1/8 resolution
+                # print('depth0 shape:', depth0.shape, 'depth1 shape:', depth1.shape)
+                # print('f8 shape:', rgb_feats[0].shape, 'f16 shape:', rgb_feats[1].shape, 'f32 shape:', rgb_feats[2].shape)
+                # Inject depth features into F16
+                # f16 = f16 + depth0
+                depth_cat = torch.cat([depth0, depth1], dim=0)
+                f16 = f16 + depth_cat
                 ms_feats = (f8, f16, f32)
 
         if len(ms_feats) == 3:  # same image shape
@@ -172,27 +177,42 @@ class DepthFeatureInjection(nn.Module):
     def __init__(self, in_dim, out_dim, config, cross_attn=True):
         super().__init__()
         self.cross_attn = cross_attn
-
+        # in_dim: 384; from depth anything v2
+        # out_dim: 256; from resnet18
         self.proj0 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
         self.proj1 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
+        self.out_dim = out_dim
 
         if cross_attn:
-            self.attn = LocalFeatureTransformer(config["depth_injection"])
+            self.attn = LocalFeatureTransformer(config["depth_injection"],
+                                                is16=True)
 
     def forward(self, depth0, depth1, mask0=None, mask1=None):
-        # depth0, depth1: [N, C_in, H, W]
+        # depth0, depth1: [N, H_d*W_d, C]
+        # Remove class token
+        # print(depth0)
+        # print(depth1)
+        depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
+        depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
+        # Interpolate to F16
+        depth0 = F.interpolate(depth0, (52, 52), mode="bilinear")
+        depth1 = F.interpolate(depth1, (52, 52), mode="bilinear")
+        # Project 384 to 256(1/16)
         d0 = self.proj0(depth0)
         d1 = self.proj1(depth1)
+        # print('d0 shape:', d0, 'd1 shape:', d1)
 
         if self.cross_attn:
+            # print('mask0 shape:', mask0, 'mask1 shape:', mask1)
             d0, d1 = self.attn(d0, d1, mask0, mask1)
-
-        return d0 + depth0, d1 + depth1  # residual fusion
+        # print(d0, d1, depth0, depth1)
+        # print('d0', d0, 'd1', d1, 'depth0', depth0, 'depth1', depth1)
+        return d0, d1
 
 class DepthAnythingFeatureExtractor(nn.Module):
     """Wraps DepthAnythingV2 to extract the final feature map (not depth map)."""
 
-    def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
+    def __init__(self, config, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
         super().__init__()
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
@@ -224,4 +244,5 @@ class DepthAnythingFeatureExtractor(nn.Module):
 
         outputs = self.model(**inputs, output_hidden_states=True)
         B = len(image0)
+        
         return outputs.hidden_states[-1][:B], outputs.hidden_states[-1][B:]

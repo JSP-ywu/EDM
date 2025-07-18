@@ -22,8 +22,8 @@ class EDM(nn.Module):
 
         # Modules
         self.backbone = ResNet18(config)
-        self.depth_extractor = DepthAnythingFeatureExtractor()
-        self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=384, config=config)
+        self.depth_extractor = DepthAnythingFeatureExtractor(config)
+        self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config)
         self.neck = CIM(config, depth_injector=self.depth_injector)
         # self.neck = CIM(config)
         self.coarse_matching = CoarseMatching(config)
@@ -35,6 +35,8 @@ class EDM(nn.Module):
             data (dict): {
                 'image0': (torch.Tensor): (N, 1, H, W)
                 'image1': (torch.Tensor): (N, 1, H, W)
+                'depth_feat_image0': (torch.Tensor): (N, 3, H, W) rgb image
+                'depth_feat_image1': (torch.Tensor): (N, 3, H, W) rgb image
                 'mask0'(optional) : (torch.Tensor): (N, H, W) '0' indicates a padded position
                 'mask1'(optional) : (torch.Tensor): (N, H, W)
             }
@@ -60,7 +62,9 @@ class EDM(nn.Module):
             f8, f16, f32, f8_fine = feats
             if "depth_feat0" not in data:
                 with torch.no_grad():
-                    depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"], data["depth_feat_image1"])
+                    # print('[DEBUG] Extracting depth features...')
+                    depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],
+                                                                    data["depth_feat_image1"])
                     data["depth_feat0"] = depth_feat0
                     data["depth_feat1"] = depth_feat1
             ms_feats = {

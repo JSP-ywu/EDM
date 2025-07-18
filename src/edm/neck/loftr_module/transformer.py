@@ -244,12 +244,14 @@ class AG_RoPE_EncoderLayer(nn.Module):
         agg_size1=2,
         rope=False,
         npe=None,
+        is16=False,
     ):
         super(AG_RoPE_EncoderLayer, self).__init__()
         self.dim = d_model // nhead
         self.nhead = nhead
         self.agg_size0, self.agg_size1 = agg_size0, agg_size1
         self.rope = rope
+        self.is16 = is16
 
         # aggregate and position encoding
         self.aggregate = (
@@ -312,12 +314,19 @@ class AG_RoPE_EncoderLayer(nn.Module):
             self.max_pool(source).permute(0, 2, 3, 1)
         )  # [N, H, W, C]
         if x_mask is not None:
+            # mask 1/8 to 1/16
+            if self.is16:
+                x_mask, source_mask = map(
+                    lambda x: self.mask_max_pool(x.float()).bool(),
+                    [x_mask, source_mask],
+                )
             # mask 1/8 to 1/32
-            x_mask, source_mask = map(
-                lambda x: self.mask_max_pool(
-                    self.mask_max_pool(x.float())).bool(),
-                [x_mask, source_mask],
-            )
+            else:
+                x_mask, source_mask = map(
+                    lambda x: self.mask_max_pool(
+                        self.mask_max_pool(x.float())).bool(),
+                    [x_mask, source_mask],
+                )
         query, key, value = self.q_proj(
             query), self.k_proj(source), self.v_proj(source)
 
@@ -329,9 +338,14 @@ class AG_RoPE_EncoderLayer(nn.Module):
         # multi-head attention handle padding mask
         m = self.attention(query, key, value, q_mask=x_mask,
                            kv_mask=source_mask)
+        # print(m,'after attention')
         m = self.merge(m.reshape(bs, -1, self.nhead * self.dim))  # [N, L, C]
+        # print(m, 'after merge')
 
         # Upsample feature
+        # print(x)
+        # print(H0, self.agg_size0, W0, self.agg_size0)
+        # print(m)
         m = rearrange(
             m, "b (h w) c -> b c h w", h=H0 // self.agg_size0, w=W0 // self.agg_size0
         )  # [N, C, H0, W0]
@@ -355,7 +369,7 @@ Modified from EfficientLoFTR
 class LocalFeatureTransformer(nn.Module):
     """A Local Feature Transformer (LoFTR) module."""
 
-    def __init__(self, config):
+    def __init__(self, config, is16=False):
         super(LocalFeatureTransformer, self).__init__()
         self.d_model = config["d_model"]
         self.nhead = config["nhead"]
@@ -370,6 +384,7 @@ class LocalFeatureTransformer(nn.Module):
             config["agg_size1"],
             config["rope"],
             config["npe"],
+            is16=is16
         )
         cross_layer = AG_RoPE_EncoderLayer(
             config["d_model"],
@@ -378,6 +393,7 @@ class LocalFeatureTransformer(nn.Module):
             config["agg_size1"],
             False,
             config["npe"],
+            is16=is16
         )
 
         self.layers = nn.ModuleList(

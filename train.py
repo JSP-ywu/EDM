@@ -83,6 +83,8 @@ def parse_args():
 
 
 def main():
+    import lovely_tensors
+    lovely_tensors.monkey_patch()
     # parse arguments
     args = parse_args()
     rank_zero_only(pprint.pprint)(vars(args))
