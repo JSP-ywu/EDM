@@ -1,7 +1,7 @@
 from ..utils.misc import detect_NaN
 from .head.fine_matching import FineMatching
 from .head.coarse_matching import CoarseMatching
-from .neck.neck import CIM
+from .neck.neck import CIM, DepthFeatureInjection, DepthAnythingFeatureExtractor
 from .backbone.resnet import ResNet18
 from einops.einops import rearrange
 import torch.nn.functional as F
@@ -22,7 +22,10 @@ class EDM(nn.Module):
 
         # Modules
         self.backbone = ResNet18(config)
-        self.neck = CIM(config)
+        self.depth_extractor = DepthAnythingFeatureExtractor()
+        self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=384, config=config)
+        self.neck = CIM(config, depth_injector=self.depth_injector)
+        # self.neck = CIM(config)
         self.coarse_matching = CoarseMatching(config)
         self.fine_matching = FineMatching(config)
 
@@ -52,9 +55,18 @@ class EDM(nn.Module):
         if data["hw0_i"] == data["hw1_i"]:
             # faster & better BN convergence
             feats = self.backbone(
-                torch.cat([data["image0"], data["image1"]], dim=0))
+                torch.cat([data["image0"], data["image1"]], dim=0)
+            )
             f8, f16, f32, f8_fine = feats
-            ms_feats = f8, f16, f32
+            if "depth_feat0" not in data:
+                with torch.no_grad():
+                    depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"], data["depth_feat_image1"])
+                    data["depth_feat0"] = depth_feat0
+                    data["depth_feat1"] = depth_feat1
+            ms_feats = {
+                "rgb": (f8, f16, f32),
+                "depth": (data["depth_feat0"], data["depth_feat1"])
+            }
             feat_f0, feat_f1 = f8_fine.chunk(2)
         else:
             # handle different input shapes

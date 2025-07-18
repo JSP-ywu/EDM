@@ -95,6 +95,12 @@ class PL_EDM(pl.LightningModule):
         optimizer.zero_grad()
 
     def _trainval_inference(self, batch):
+        # Ensure images are float and scaled properly
+        batch["image0"] = batch["image0"].float().clamp(0, 1)
+        batch["image1"] = batch["image1"].float().clamp(0, 1)
+        batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
+        batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
+
         with self.profiler.profile("Compute coarse supervision"):
             with torch.autocast(enabled=False, device_type="cuda"):
                 compute_supervision_coarse(batch, self.config)
@@ -288,10 +294,15 @@ class PL_EDM(pl.LightningModule):
         self.validation_step_outputs.clear()
 
     def test_step(self, batch, batch_idx):
+        batch["image0"] = batch["image0"].float().clamp(0, 1)
+        batch["image1"] = batch["image1"].float().clamp(0, 1)
+        batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
+        batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
+
         if self.config.EDM.HALF:
             self.matcher = self.matcher.eval().half()
 
-        # Following EfficientLoFTR
+        # Following EfficientLofTR
         if not self.warmup:
             if self.config.EDM.HALF:
                 for i in range(50):

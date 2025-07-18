@@ -27,7 +27,7 @@ class RoPEPositionEncodingSine(nn.Module):
             0).float().unsqueeze(-1)  # [H, 1]
         j_position = torch.ones(max_shape).cumsum(
             1).float().unsqueeze(-1)  # [W, 1]
-
+        
         assert npe is not None
         train_res_H, train_res_W, test_res_H, test_res_W = (
             npe[0],

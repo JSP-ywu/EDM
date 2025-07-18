@@ -16,7 +16,7 @@ n_gpus_per_node=4
 torch_num_workers=8
 batch_size=8
 pin_memory=true
-exp_name="edm_outdoor"
+exp_name="edm_outdoor_dim"
 ckpt=""
 resume=False
 

@@ -20,4 +20,9 @@ cfg.EDM.NECK.NPE = [
     cfg.EDM.TEST_RES_H,
     cfg.EDM.TEST_RES_W,
 ]
-
+cfg.EDM.DEPTH_INJECTION.NPE = [
+    cfg.EDM.TRAIN_RES_H,
+    cfg.EDM.TRAIN_RES_W,
+    cfg.EDM.TEST_RES_H,
+    cfg.EDM.TEST_RES_W,
+]

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 from loguru import logger
 
-from src.utils.dataset import read_megadepth_gray, read_megadepth_depth
+from src.utils.dataset import read_megadepth_gray, read_megadepth_depth, read_megadepth_rgb
 
 
 class MegaDepthDataset(Dataset):
@@ -97,6 +97,13 @@ class MegaDepthDataset(Dataset):
         )
         # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
 
+        image0_rgb, _, _ = read_megadepth_rgb(
+            img_name0, self.img_resize, self.df, self.img_padding, None
+        )
+        image1_rgb, _, _ = read_megadepth_rgb(
+            img_name1, self.img_resize, self.df, self.img_padding, None
+)
+
         # read depth. shape: (h, w)
         if self.mode in ["train", "val"]:
             depth0 = read_megadepth_depth(
@@ -133,8 +140,10 @@ class MegaDepthDataset(Dataset):
             )
         data = {
             "image0": image0,  # (1, h, w)
+            "depth_feat_image0": image0_rgb, # (3, h, w)
             "depth0": depth0,  # (h, w)
             "image1": image1,
+            "depth_feat_image1": image1_rgb,
             "depth1": depth1,
             "T_0to1": T_0to1,  # (4, 4)
             "T_1to0": T_1to0,

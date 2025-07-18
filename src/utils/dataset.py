@@ -130,6 +130,34 @@ def read_megadepth_gray(path, resize=None, df=None, padding=False, augment_fn=No
 
     return image, mask, scale
 
+def read_megadepth_rgb(path, resize=None, df=None, padding=False, augment_fn=None):
+    '''
+    Read a RGB image from the MegaDepth dataset for extracting depth features.
+    '''
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    w, h = image.shape[1], image.shape[0]
+    w_new, h_new = get_resized_wh(w, h, resize)
+    w_new, h_new = get_divisible_wh(w_new, h_new, df)
+
+    image = cv2.resize(image, (w_new, h_new))
+    scale = torch.tensor([w / w_new, h / h_new], dtype=torch.float)
+
+    if padding:
+        pad_to = max(h_new, w_new)
+        image, mask = pad_bottom_right(image.transpose(2, 0, 1), pad_to, ret_mask=True)
+    else:
+        image = image.transpose(2, 0, 1)
+        mask = None
+
+    image = torch.from_numpy(image).float() / 255.0  # (3, h, w)
+    if mask is not None:
+        mask = torch.from_numpy(mask)
+
+    return image, mask, scale
+
+
 
 def read_megadepth_depth(path, pad_to=None):
     if str(path).startswith("s3://"):
@@ -140,7 +168,6 @@ def read_megadepth_depth(path, pad_to=None):
         depth, _ = pad_bottom_right(depth, pad_to, ret_mask=False)
     depth = torch.from_numpy(depth).float()  # (h, w)
     return depth
-
 
 # --- ScanNet ---
 

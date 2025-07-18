@@ -44,7 +44,7 @@ class Conv2d_BN_Act(nn.Sequential):
 class CIM(nn.Module):
     """Feature Aggregation, Correlation Injection Module"""
 
-    def __init__(self, config):
+    def __init__(self, config, depth_injector=None):
         super(CIM, self).__init__()
 
         self.block_dims = config["backbone"]["block_dims"]
@@ -97,8 +97,19 @@ class CIM(nn.Module):
         )
 
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
+        self.depth_injector = depth_injector
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
+        if isinstance(ms_feats, dict) and "rgb" in ms_feats and "depth" in ms_feats:
+            rgb_feats = ms_feats["rgb"]
+            depth_feats = ms_feats["depth"]
+            if self.depth_injector is not None:
+                depth0, depth1 = depth_feats
+                depth0, depth1 = self.depth_injector(depth0, depth1, mask_c0, mask_c1)
+                f8, f16, f32 = rgb_feats
+                f8 = f8 + depth0  # inject at 1/8 resolution
+                ms_feats = (f8, f16, f32)
+
         if len(ms_feats) == 3:  # same image shape
             f8, f16, f32 = ms_feats
             f32 = self.fc32(f32)
@@ -158,7 +169,7 @@ class CIM(nn.Module):
 class DepthFeatureInjection(nn.Module):
     """Inject DepthAnythingV2 features into EDM via cross-attention or projection"""
 
-    def __init__(self, in_dim, out_dim, cross_attn=True):
+    def __init__(self, in_dim, out_dim, config, cross_attn=True):
         super().__init__()
         self.cross_attn = cross_attn
 
@@ -166,13 +177,7 @@ class DepthFeatureInjection(nn.Module):
         self.proj1 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
 
         if cross_attn:
-            self.attn = LocalFeatureTransformer({
-                "layer_names": ["self", "cross"] * 2,
-                "cross_attention": True,
-                "heads": 4,
-                "dim": out_dim,
-                "depth": 2
-            })
+            self.attn = LocalFeatureTransformer(config["depth_injection"])
 
     def forward(self, depth0, depth1, mask0=None, mask1=None):
         # depth0, depth1: [N, C_in, H, W]
@@ -183,3 +188,40 @@ class DepthFeatureInjection(nn.Module):
             d0, d1 = self.attn(d0, d1, mask0, mask1)
 
         return d0 + depth0, d1 + depth1  # residual fusion
+
+class DepthAnythingFeatureExtractor(nn.Module):
+    """Wraps DepthAnythingV2 to extract the final feature map (not depth map)."""
+
+    def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
+        super().__init__()
+        from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+
+        self.processor = AutoImageProcessor.from_pretrained(model_name,
+                                                            trust_remote_code=True)
+        self.model = AutoModelForDepthEstimation.from_pretrained(model_name,
+                                                                 trust_remote_code=True)
+        self.model.eval()  # important for inference stability
+
+    @torch.no_grad()
+    def forward(self, image0, image1):
+        """
+        image0, image1: torch.Tensor, shape [B, 3, H, W], values in [0, 1]
+        Returns: depth_feat0, depth_feat1: [B, C, H/4, W/4]
+        """
+        # HuggingFace expects images in [0, 255] and shape HWC
+        import torchvision.transforms.functional as TF
+        # print(f"[DEBUG] image0 shape: {image0.shape}, dtype: {image0.dtype}")
+        # print(f"[DEBUG] image1 shape: {image1.shape}, dtype: {image1.dtype}")
+        
+        # for i, img in enumerate(image0 + image1):
+        #     print(f"[DEBUG] Image {i} shape: {img.shape}, dtype: {img.dtype}")
+        #     if isinstance(img, torch.Tensor) and img.ndim != 3:
+        #         print(f"[WARNING] Bad shape: {img.shape} — skipping")
+        image0 = [TF.to_pil_image(img.cpu()) for img in image0]
+        image1 = [TF.to_pil_image(img.cpu()) for img in image1]
+        inputs = self.processor(images=image0 + image1, return_tensors="pt")
+        inputs = {k: v.to(next(self.model.parameters()).device) for k, v in inputs.items()}
+
+        outputs = self.model(**inputs, output_hidden_states=True)
+        B = len(image0)
+        return outputs.hidden_states[-1][:B], outputs.hidden_states[-1][B:]
