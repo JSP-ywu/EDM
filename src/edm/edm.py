@@ -37,6 +37,8 @@ class EDM(nn.Module):
                 'image1': (torch.Tensor): (N, 1, H, W)
                 'depth_feat_image0': (torch.Tensor): (N, 3, H, W) rgb image
                 'depth_feat_image1': (torch.Tensor): (N, 3, H, W) rgb image
+                'depth_feat0'(optional) : (torch.Tensor): (N, 256, H_d, W_d) depth features
+                'depth_feat1'(optional) : (torch.Tensor): (N, 256, H_d, W_d) depth features
                 'mask0'(optional) : (torch.Tensor): (N, H, W) '0' indicates a padded position
                 'mask1'(optional) : (torch.Tensor): (N, H, W)
             }
