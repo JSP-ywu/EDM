@@ -75,8 +75,8 @@ def worker(rank, world_size, args):
 # ------------------------ main -----------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image_dir", required=True, help="이미지 루트 폴더")
-    ap.add_argument("--save_dir", required=True, help="feature 저장 루트")
+    ap.add_argument("--image_dir", required=True, help="Image root path")
+    ap.add_argument("--save_dir", required=True, help="Feature save path")
     args = ap.parse_args()
 
     world_size = torch.cuda.device_count()
