@@ -7,7 +7,7 @@ from loguru import logger as loguru_logger
 
 import lightning.pytorch as pl
 from lightning.pytorch.utilities import rank_zero_only
-from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.strategies import DDPStrategy
 from src.config.default import get_cfg_defaults
@@ -117,8 +117,17 @@ def main():
     loguru_logger.info(f"EDM DataModule initialized!")
 
     # TensorBoard Logger
-    logger = TensorBoardLogger(
-        save_dir="logs/tb_logs", name=args.exp_name, default_hp_metric=False
+    # logger = TensorBoardLogger(
+    #     save_dir="logs/tb_logs", name=args.exp_name, default_hp_metric=False
+    # )
+    # Wandb Logger
+    logger = WandbLogger(
+        project="EDM",
+        name=args.exp_name,
+        save_dir="logs/wandb_logs",
+        log_model=False,
+        default_hp_metric=False,
+        resume="allow",
     )
     ckpt_dir = Path(logger.log_dir) / "checkpoints"
 
