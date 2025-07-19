@@ -22,7 +22,8 @@ class EDM(nn.Module):
 
         # Modules
         self.backbone = ResNet18(config)
-        self.depth_extractor = DepthAnythingFeatureExtractor(config)
+        if self.config["edm"]["pre_extracted_depth"]:
+            self.depth_extractor = DepthAnythingFeatureExtractor(config)
         self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config)
         self.neck = CIM(config, depth_injector=self.depth_injector)
         # self.neck = CIM(config)
@@ -62,7 +63,7 @@ class EDM(nn.Module):
                 torch.cat([data["image0"], data["image1"]], dim=0)
             )
             f8, f16, f32, f8_fine = feats
-            if "depth_feat0" not in data:
+            if not self.config["edm"]["pre_extracted_depth"]:
                 with torch.no_grad():
                     # print('[DEBUG] Extracting depth features...')
                     depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],

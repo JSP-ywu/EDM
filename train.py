@@ -78,6 +78,14 @@ def parse_args():
         default=False,
         help="Resume training from checkpoint (--ckpt_path)"
     )
+    parser.add_argument(
+        "--pre_extracted_depth",
+        type=lambda x: bool(strtobool(x)),
+        nargs="?",
+        const=True,
+        default=False,
+        help="Use pre-extracted depth maps (default: False)",
+    )
 
     return parser.parse_args()
 
@@ -106,6 +114,11 @@ def main():
     config.TRAINER.TRUE_LR = config.TRAINER.CANONICAL_LR * _scaling
     config.TRAINER.WARMUP_STEP = math.floor(
         config.TRAINER.WARMUP_STEP / _scaling)
+    
+    # Check if the pre-extracted depth features are used
+    if args.pre_extracted_depth:
+        config.EDM.PRE_EXTRACTED_DEPTH = True
+        loguru_logger.info("Using pre-extracted depth maps.")
 
     # lightning module
     profiler = build_profiler(args.profiler_name)

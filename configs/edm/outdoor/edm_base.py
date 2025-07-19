@@ -10,6 +10,7 @@ cfg.TRAINER.EPI_ERR_THR = 1e-4
 cfg.EDM.COARSE.MCONF_THR = 0.05
 cfg.EDM.FINE.SIGMA_THR = 1e-6
 cfg.EDM.COARSE.BORDER_RM = 0
+cfg.EDM.PRE_EXTRACTED_DEPTH = False  # Use pre-extracted depth maps
 
 # Top-K should not exceed grid_size = TEST_RES_H / 8 * TEST_RES_W / 8
 # The recommended value is approximately grid_size * 0.35 for Megadepth

@@ -18,6 +18,7 @@ batch_size=6
 pin_memory=true
 exp_name="edm_outdoor_dim"
 ckpt=""
+pre_extracted_depth=False
 resume=False
 
 python -u ./train.py \
@@ -37,5 +38,5 @@ python -u ./train.py \
     --num_sanity_val_steps=10 \
     --benchmark=true \
     --max_epochs=30 \
-    --split_data_idx=1
-
+    --split_data_idx=1 \
+    --pre_extracted_depth=${pre_extracted_depth}\

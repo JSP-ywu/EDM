@@ -141,9 +141,11 @@ class MegaDepthDataset(Dataset):
         data = {
             "image0": image0,  # (1, h, w)
             "depth_feat_image0": image0_rgb, # (3, h, w)
+            # "depth_feat0": depth0,  # (1, 1370, 384) // stick to the depth anything v2 dimension
             "depth0": depth0,  # (h, w)
             "image1": image1,
             "depth_feat_image1": image1_rgb,
+            # "depth_feat1": depth1,  # (1, 1370, 384)
             "depth1": depth1,
             "T_0to1": T_0to1,  # (4, 4)
             "T_1to0": T_1to0,

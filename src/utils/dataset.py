@@ -92,7 +92,7 @@ def pad_bottom_right(inp, pad_size, ret_mask=False):
 
 
 # --- MEGADEPTH ---
-
+# def read_megadepth_depth(path, pad_to=None):
 
 def read_megadepth_gray(path, resize=None, df=None, padding=False, augment_fn=None):
     """
