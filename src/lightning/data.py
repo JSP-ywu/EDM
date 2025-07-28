@@ -52,6 +52,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
         self.val_npz_root = config.DATASET.VAL_NPZ_ROOT
         self.val_list_path = config.DATASET.VAL_LIST_PATH
         self.val_intrinsic_path = config.DATASET.VAL_INTRINSIC_PATH
+        self.pre_extracted_depth = config.EDM.PRE_EXTRACTED_DEPTH  # (optional), default: False
         # testing
         self.test_data_root = config.DATASET.TEST_DATA_ROOT
         self.test_pose_root = config.DATASET.TEST_POSE_ROOT  # (optional)
@@ -310,6 +311,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
                         augment_fn=augment_fn,
                         coarse_scale=self.coarse_scale,
                         fp16=self.fp16,
+                        pre_extracted_depth=self.pre_extracted_depth  # default: False
                     )
                 )
             else:

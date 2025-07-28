@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 from loguru import logger
 
-from src.utils.dataset import read_megadepth_gray, read_megadepth_depth, read_megadepth_rgb
+from src.utils.dataset import read_megadepth_gray, read_megadepth_depth, read_megadepth_rgb, read_megadepth_depth_feature
 
 
 class MegaDepthDataset(Dataset):
@@ -21,6 +21,7 @@ class MegaDepthDataset(Dataset):
         depth_padding=False,
         augment_fn=None,
         fp16=False,
+        pre_extracted_depth=False,
         **kwargs
     ):
         """
@@ -96,13 +97,13 @@ class MegaDepthDataset(Dataset):
             img_name1, self.img_resize, self.df, self.img_padding, None
         )
         # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
-
-        image0_rgb, _, _ = read_megadepth_rgb(
-            img_name0, self.img_resize, self.df, self.img_padding, None
-        )
-        image1_rgb, _, _ = read_megadepth_rgb(
-            img_name1, self.img_resize, self.df, self.img_padding, None
-)
+        if not self.pre_extracted_depth:
+            image0_rgb, _, _ = read_megadepth_rgb(
+                img_name0, self.img_resize, self.df, self.img_padding, None
+            )
+            image1_rgb, _, _ = read_megadepth_rgb(
+                img_name1, self.img_resize, self.df, self.img_padding, None
+            )       
 
         # read depth. shape: (h, w)
         if self.mode in ["train", "val"]:
@@ -116,6 +117,11 @@ class MegaDepthDataset(Dataset):
             )
         else:
             depth0 = depth1 = torch.tensor([])
+
+        # read pre-extracted depth features: 1, 1369, 384 (fixed from DepthAnything-v2-small)
+        if self.mode in ["train", "val"] and self.pre_extracted_depth:
+            depth_feat0 = read_megadepth_depth_feature(img_name0)
+            depth_feat1 = read_megadepth_depth_feature(img_name1)
 
         # read intrinsics of original size
         K_0 = torch.tensor(
@@ -140,12 +146,8 @@ class MegaDepthDataset(Dataset):
             )
         data = {
             "image0": image0,  # (1, h, w)
-            "depth_feat_image0": image0_rgb, # (3, h, w)
-            # "depth_feat0": depth0,  # (1, 1370, 384) // stick to the depth anything v2 dimension
             "depth0": depth0,  # (h, w)
             "image1": image1,
-            "depth_feat_image1": image1_rgb,
-            # "depth_feat1": depth1,  # (1, 1370, 384)
             "depth1": depth1,
             "T_0to1": T_0to1,  # (4, 4)
             "T_1to0": T_1to0,
@@ -171,5 +173,15 @@ class MegaDepthDataset(Dataset):
                     recompute_scale_factor=False,
                 )[0].bool()
             data.update({"mask0": ts_mask_0, "mask1": ts_mask_1})
+        # If using pre-extracted depth features, add them to data
+        if self.pre_extracted_depth:
+            data.update({"depth_feat0": depth_feat0, "depth_feat1": depth_feat1})
 
+        # Or add RGB images for depth extraction, it will be read when needed
+        else:
+            data.update({
+                "depth_feat_image0": image0_rgb,
+                "depth_feat_image1": image1_rgb,
+            })
+            
         return data

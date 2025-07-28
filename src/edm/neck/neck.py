@@ -170,6 +170,21 @@ class CIM(nn.Module):
             feat_c1 = f8
 
         return feat_c0, feat_c1
+    
+class DepthFeatureFusion(nn.Module):
+    """Feature Fusion Module for DepthAnythingV2 features"""
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.fusion = CIM(config, depth_injector=DepthFeatureInjection(
+            in_dim=384, out_dim=256, config=config))
+
+    def forward(self, ms_feats, mask_c0=None, mask_c1=None):
+        """
+        ms_feats: (f8, f16, f32) or (f8_0, f16_0, f32_0, f8_1, f16_1, f32_1)
+        """
+        return self.fusion(ms_feats, mask_c0, mask_c1)
 
 class DepthFeatureInjection(nn.Module):
     """Inject DepthAnythingV2 features into EDM via cross-attention or projection"""
@@ -182,18 +197,23 @@ class DepthFeatureInjection(nn.Module):
         self.proj0 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
         self.proj1 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
         self.out_dim = out_dim
+        self.pre_extracted_depth = config["edm"]["pre_extracted_depth"]
 
         if cross_attn:
             self.attn = LocalFeatureTransformer(config["depth_injection"],
                                                 is16=True)
 
     def forward(self, depth0, depth1, mask0=None, mask1=None):
-        # depth0, depth1: [N, H_d*W_d, C]
-        # Remove class token
+        # depth0, depth1: [N, 1369, 384] Fixed
         # print(depth0)
         # print(depth1)
-        depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
-        depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
+        if self.pre_extracted_depth:
+            depth0 = depth0.permute(0, 2, 1).reshape(-1, 384, 37, 37)
+            depth1 = depth1.permute(0, 2, 1).reshape(-1, 384, 37, 37)
+        else:
+            # Remove cls token when feature is extracted while training
+            depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
+            depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
         # Interpolate to F16
         depth0 = F.interpolate(depth0, (52, 52), mode="bilinear")
         depth1 = F.interpolate(depth1, (52, 52), mode="bilinear")

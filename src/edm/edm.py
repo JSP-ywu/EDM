@@ -22,6 +22,7 @@ class EDM(nn.Module):
 
         # Modules
         self.backbone = ResNet18(config)
+        # Load when pre-trained weights is not available or test time
         if self.config["edm"]["pre_extracted_depth"]:
             self.depth_extractor = DepthAnythingFeatureExtractor(config)
         self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config)
@@ -32,12 +33,13 @@ class EDM(nn.Module):
 
     def forward(self, data):
         """
+        ### Only one of depth_feat_image and depth_feat are given from datamodule ###
         Update:
             data (dict): {
                 'image0': (torch.Tensor): (N, 1, H, W)
                 'image1': (torch.Tensor): (N, 1, H, W)
-                'depth_feat_image0': (torch.Tensor): (N, 3, H, W) rgb image
-                'depth_feat_image1': (torch.Tensor): (N, 3, H, W) rgb image
+                'depth_feat_image0'(optional): (torch.Tensor): (N, 3, H, W) rgb image
+                'depth_feat_image1'(optional): (torch.Tensor): (N, 3, H, W) rgb image
                 'depth_feat0'(optional) : (torch.Tensor): (N, 256, H_d, W_d) depth features
                 'depth_feat1'(optional) : (torch.Tensor): (N, 256, H_d, W_d) depth features
                 'mask0'(optional) : (torch.Tensor): (N, H, W) '0' indicates a padded position
@@ -90,6 +92,7 @@ class EDM(nn.Module):
             mask_c0, mask_c1 = data["mask0"], data["mask1"]
 
         # 2.  Feature Interaction & Multi-Scale Fusion
+        # Add depth feature injection and fusion process
         feat_c0, feat_c1 = self.neck(ms_feats, mask_c0, mask_c1)
 
         data.update(

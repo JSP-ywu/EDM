@@ -47,8 +47,9 @@ class PL_EDM(pl.LightningModule):
         self.loss = EDMLoss(_config)
 
         # Freeze depth extractor
-        self.matcher.depth_extractor.requires_grad_(False)
-        self.matcher.depth_extractor.eval()
+        if not self.config.EDM.PRE_EXTRACTED_DEPTH:
+            self.matcher.depth_extractor.requires_grad_(False)
+            self.matcher.depth_extractor.eval()
 
         # Pretrained weights
         if pretrained_ckpt:
@@ -102,8 +103,9 @@ class PL_EDM(pl.LightningModule):
         # Ensure images are float and scaled properly
         batch["image0"] = batch["image0"].float().clamp(0, 1)
         batch["image1"] = batch["image1"].float().clamp(0, 1)
-        batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
-        batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
+        if not self.config.EDM.PRE_EXTRACTED_DEPTH:
+            batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
+            batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
 
         with self.profiler.profile("Compute coarse supervision"):
             with torch.autocast(enabled=False, device_type="cuda"):
@@ -300,8 +302,9 @@ class PL_EDM(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         batch["image0"] = batch["image0"].float().clamp(0, 1)
         batch["image1"] = batch["image1"].float().clamp(0, 1)
-        batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
-        batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
+        if not self.config.EDM.PRE_EXTRACTED_DEPTH:
+            batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
+            batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
 
         if self.config.EDM.HALF:
             self.matcher = self.matcher.eval().half()

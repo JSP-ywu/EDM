@@ -1,0 +1,5 @@
+[default]
+entity = jsp-ywu
+project = edm-depth_pre_extracted
+base_url = https://api.wandb.ai
+

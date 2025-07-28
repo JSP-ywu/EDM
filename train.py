@@ -135,7 +135,7 @@ def main():
     # )
     # Wandb Logger
     logger = WandbLogger(
-        project="EDM",
+        project="edm-depth_pre_extracted",
         name=args.exp_name,
         save_dir="logs/wandb_logs",
         log_model=False,

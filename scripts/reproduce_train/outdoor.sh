@@ -18,7 +18,7 @@ batch_size=6
 pin_memory=true
 exp_name="edm_outdoor_dim"
 ckpt=""
-pre_extracted_depth=False
+pre_extracted_depth=True
 resume=False
 
 python -u ./train.py \

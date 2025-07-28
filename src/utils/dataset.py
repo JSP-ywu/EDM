@@ -4,7 +4,7 @@ import numpy as np
 import h5py
 import torch
 from numpy.linalg import inv
-
+from pathlib import Path
 
 try:
     # for internel use only
@@ -169,6 +169,27 @@ def read_megadepth_depth(path, pad_to=None):
     depth = torch.from_numpy(depth).float()  # (h, w)
     return depth
 
+def read_megadepth_depth_feature(path):
+    """
+    Load depth‐token features extracted by ``extract_depth_feature.py``.
+
+    Accepts a base path (without extension) or a full path ending in .pth, .h5, or .hdf5.
+    Automatically tries the supported extensions if none is provided.
+
+    Args:
+        path (str or pathlib.Path): Base path or feature file path.
+            S3 URIs should point to the HDF5 file (without extension or with .h5/.hdf5).
+
+    Returns:
+        torch.Tensor: Feature tensor of shape (1369, 384), dtype float32.
+    """
+    # TODO: Support both .pth and .h5 files.
+    path_str = str(path)
+    depth_feature_path = Path(path_str).with_suffix(".pth")
+
+    feats = torch.load(depth_feature_path)                        # (1,1369,384)
+    return feats.squeeze(0).float()
+    
 # --- ScanNet ---
 
 
