@@ -44,7 +44,7 @@ class Conv2d_BN_Act(nn.Sequential):
 class CIM(nn.Module):
     """Feature Aggregation, Correlation Injection Module"""
 
-    def __init__(self, config, depth_injector=None):
+    def __init__(self, config, depth_injector=None, depth_fusion=None):
         super(CIM, self).__init__()
 
         self.block_dims = config["backbone"]["block_dims"]
@@ -97,7 +97,10 @@ class CIM(nn.Module):
         )
 
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
-        self.depth_injector = depth_injector
+        if depth_injector is not None:
+            self.depth_injector = depth_injector
+        if depth_fusion is not None:
+            self.depth_fusion = depth_fusion
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
         if isinstance(ms_feats, dict) and "rgb" in ms_feats and "depth" in ms_feats:
@@ -114,6 +117,8 @@ class CIM(nn.Module):
                 depth_cat = torch.cat([depth0, depth1], dim=0)
                 f16 = f16 + depth_cat
                 ms_feats = (f8, f16, f32)
+            if self.depth_fusion is not None:
+                return self.depth_fusion(ms_feats, mask_c0, mask_c1)
 
         if len(ms_feats) == 3:  # same image shape
             f8, f16, f32 = ms_feats

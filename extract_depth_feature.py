@@ -61,15 +61,17 @@ def worker(rank, world_size, args):
     # Glob all image paths and split
     all_imgs = sorted(
         p for p in Path(args.image_dir).rglob("*")
-        if p.suffix.lower() in {".jpg", ".png", ".jpeg"}
+        if p.suffix.lower() == ".jpg"
     )
     shard = all_imgs[rank::world_size]     # round-robin
 
     # Process images in batches
     B = args.batch_size
-    for i in range(0, len(shard), B):
+    from tqdm import tqdm
+    for i in tqdm(range(0, len(shard), B), desc="Processing batches"):
         batch_paths = shard[i : i + B]
-        pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths]
+        pil_imgs = [Image.open(p).convert("RGB").resize((480, 640), Image.BILINEAR) for p in batch_paths] # For scannet
+        # pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths] # For megadepth
         tokens   = extractor(pil_imgs)          # [B,1369,384]
         # print(tokens)
         # print(pil_imgs[0])

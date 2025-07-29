@@ -10,6 +10,7 @@ _CN.TRAINER = CN()
 _CN.EDM = CN()
 _CN.EDM.NECK = CN()
 _CN.EDM.DEPTH_INJECTION = CN()
+_CN.EDM.DEPTH_FUSION = CN()
 
 # training data config
 _CN.DATASET.TRAIN_DATA_ROOT = None
