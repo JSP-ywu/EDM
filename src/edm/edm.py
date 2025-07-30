@@ -1,7 +1,7 @@
 from ..utils.misc import detect_NaN
 from .head.fine_matching import FineMatching
 from .head.coarse_matching import CoarseMatching
-from .neck.neck import CIM, DepthFeatureInjection, DepthAnythingFeatureExtractor
+from .neck.neck import CIM, DepthAnythingFeatureExtractor
 from .backbone.resnet import ResNet18
 from einops.einops import rearrange
 import torch.nn.functional as F
@@ -25,8 +25,7 @@ class EDM(nn.Module):
         # Load when pre-trained weights is not available or test time
         if self.config["edm"]["pre_extracted_depth"]:
             self.depth_extractor = DepthAnythingFeatureExtractor(config)
-        self.neck = CIM(config, depth_injector=self.depth_injector)
-        # self.neck = CIM(config)
+        self.neck = CIM(config)
         self.coarse_matching = CoarseMatching(config)
         self.fine_matching = FineMatching(config)
 
@@ -64,7 +63,7 @@ class EDM(nn.Module):
                 torch.cat([data["image0"], data["image1"]], dim=0)
             )
             f8, f16, f32, f8_fine = feats
-            if not self.config["edm"]["pre_extracted_depth"]:
+            if not self.config["pre_extracted_depth"]:
                 with torch.no_grad():
                     # print('[DEBUG] Extracting depth features...')
                     depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],

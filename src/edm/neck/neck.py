@@ -98,9 +98,9 @@ class CIM(nn.Module):
 
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
         if config["edm"]["use_inject"]:
-            self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config)
+            self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config["depth_injection"])
         if config["edm"]["use_fusion"]:
-            self.depth_fusion = DepthFeatureFusion(config)
+            self.depth_fusion = DepthFeatureFusion(config["depth_fusion"])
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
         if isinstance(ms_feats, dict) and "rgb" in ms_feats and "depth" in ms_feats:
@@ -177,19 +177,25 @@ class CIM(nn.Module):
         return feat_c0, feat_c1
     
 class DepthFeatureFusion(nn.Module):
-    """Feature Fusion Module for DepthAnythingV2 features"""
+    """
+    Feature Fusion Module for DepthAnythingV2 + EDM
+    """
 
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.layer = DepthFeatureTransformer(config)
 
-    def forward(self, ms_feats, mask_c0=None, mask_c1=None):
-        """
-        ms_feats: (f8, f16, f32)
-        depth_feats: (B, 1369, 384)
-        """
-        return
+    def forward(self, feat_c0, feat_c1, ms_feats, mask_c0=None, mask_c1=None):
+        depth0, depth1 = ms_feats["depth"]
+        if self.pre_extracted_depth:
+            depth0 = depth0.permute(0, 2, 1).reshape(-1, 384, 37, 37)
+            depth1 = depth1.permute(0, 2, 1).reshape(-1, 384, 37, 37)
+        else:
+            # Remove cls token when feature is extracted while training
+            depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
+            depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
+        return ms_feats
 
 class DepthFeatureInjection(nn.Module):
     """Inject DepthAnythingV2 features into EDM via cross-attention or projection"""
@@ -202,7 +208,7 @@ class DepthFeatureInjection(nn.Module):
         self.proj0 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
         self.proj1 = Conv2d_BN_Act(in_dim, out_dim, ks=1)
         self.out_dim = out_dim
-        self.pre_extracted_depth = config["edm"]["pre_extracted_depth"]
+        self.pre_extracted_depth = config["pre_extracted_depth"]
 
         if cross_attn:
             self.attn = LocalFeatureTransformer(config["depth_injection"],
