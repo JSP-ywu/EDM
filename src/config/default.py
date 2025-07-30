@@ -13,6 +13,9 @@ _CN.EDM.MP = False  # Not use mixed precision (ELoFTR defualt used mixed precisi
 _CN.EDM.HALF = False  # Not FP16
 _CN.EDM.DEPLOY = False # export onnx model
 _CN.EDM.EVAL_TIMES = 1
+_CN.EDM.PRE_EXTRACTED_DEPTH = False # Use pre-extracted depth maps
+_CN.EDM.USE_INJECT= False  # Inject depth features into the model
+_CN.EDM.USE_FUSION = True  # Use depth fusion in the neck
 
 # 3. Coarse-Matching config
 _CN.EDM.BACKBONE = CN()

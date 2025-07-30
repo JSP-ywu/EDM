@@ -23,7 +23,8 @@ class EDM(nn.Module):
         # Modules
         self.backbone = ResNet18(config)
         # Load when pre-trained weights is not available or test time
-        if self.config["edm"]["pre_extracted_depth"]:
+        if not self.config["pre_extracted_depth"]:
+            print("[INFO] Using DepthAnythingFeatureExtractor...")
             self.depth_extractor = DepthAnythingFeatureExtractor(config)
         self.neck = CIM(config)
         self.coarse_matching = CoarseMatching(config)

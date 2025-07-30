@@ -75,6 +75,7 @@ class MegaDepthDataset(Dataset):
         self.coarse_scale = getattr(kwargs, "coarse_scale", 0.125)
 
         self.fp16 = fp16
+        self.pre_extracted_depth = pre_extracted_depth
 
     def __len__(self):
         return len(self.pair_infos)

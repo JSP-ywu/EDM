@@ -135,14 +135,21 @@ def main():
     # )
     # Wandb Logger
     logger = WandbLogger(
-        project="edm-depth_pre_extracted",
+        project="edm-depth_fusion_pre_extracted",
         name=args.exp_name,
         save_dir="logs/wandb_logs",
         log_model=False,
-        default_hp_metric=False,
+        # default_hp_metric=False,
         resume="allow",
     )
-    ckpt_dir = Path(logger.log_dir) / "checkpoints"
+    # Safe checkpoint directory setup
+    if logger.log_dir is not None:
+        ckpt_dir = Path(logger.log_dir) / "checkpoints"
+    else:
+        # Fallback to a default checkpoint directory
+        base_log_dir = Path("logs/wandb_logs") / args.exp_name
+        base_log_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_dir = base_log_dir / "checkpoints"
 
     # Callbacks
     ckpt_callback = ModelCheckpoint(

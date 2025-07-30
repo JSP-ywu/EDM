@@ -121,8 +121,8 @@ class CIM(nn.Module):
                 f16 = f16 + depth_cat
                 ms_feats = (f8, f16, f32)
 
-        if len(ms_feats) == 3:  # same image shape
-            f8, f16, f32 = ms_feats
+        if len(rgb_feats) == 3:  # same image shape
+            f8, f16, f32 = rgb_feats
             f32 = self.fc32(f32)
 
             f32_0, f32_1 = f32.chunk(2, dim=0)
@@ -149,8 +149,8 @@ class CIM(nn.Module):
 
             feat_c0, feat_c1 = f8.chunk(2)
 
-        elif len(ms_feats) == 6:  # diffirent image shape
-            f8_0, f16_0, f32_0, f8_1, f16_1, f32_1 = ms_feats
+        elif len(rgb_feats) == 6:  # diffirent image shape
+            f8_0, f16_0, f32_0, f8_1, f16_1, f32_1 = rgb_feats
             f32_0 = self.fc32(f32_0)
             f32_1 = self.fc32(f32_1)
 
@@ -219,7 +219,7 @@ class DepthFeatureFusion(nn.Module):
         depth0, depth1 = self.depth_layer(depth0, depth1, mask_c0, mask_c1)
 
         # Fuse depth and image features
-        fused_c0, fused_c1 = self.fusion_transformer(
+        fused_c0, fused_c1 = self.fusion_layer(
             feat_c0, feat_c1,  # Query: image features
             depth0, depth1,  # Key/Value: depth features
             mask_c0, mask_c1
