@@ -480,3 +480,63 @@ class DepthFeatureTransformer(nn.Module):
             feat1 = layer(feat1, feat0, mask1, mask0)
 
         return feat0, feat1
+    
+
+class FeatureFusionTransformer(nn.Module):
+    """
+    A Feature Fusion Transformer module for fusing image and depth features.
+    Query: image features, Key/Value: depth features
+    Only cross-attention, no self-attention needed.
+    """
+
+    def __init__(self, config, is16=False):
+        super(FeatureFusionTransformer, self).__init__()
+        self.d_model = config["d_model"]
+        self.nhead = config["nhead"]
+        self.num_layers = len(config["layer_names"])  # Only need number of layers
+        self.agg_size0, self.agg_size1 = config["agg_size0"], config["agg_size1"]
+
+        # Create fusion layers - only cross-attention needed
+        # No RoPE since we're doing cross-modal fusion
+        fusion_layer = AG_RoPE_EncoderLayer(
+            config["d_model"],
+            config["nhead"],
+            config["agg_size0"],
+            config["agg_size1"],
+            False,  # No RoPE for cross-modal fusion
+            config["npe"],
+            is16=is16
+        )
+
+        self.layers = nn.ModuleList(
+            [copy.deepcopy(fusion_layer) for _ in range(self.num_layers)]
+        )
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, image_feat0, image_feat1, depth_feat0, depth_feat1, mask0=None, mask1=None, data=None):
+        """
+        Args:
+            image_feat0 (torch.Tensor): [N, C, H, W] - Query features (image)
+            image_feat1 (torch.Tensor): [N, C, H, W] - Query features (image)
+            depth_feat0 (torch.Tensor): [N, C, H, W] - Key/Value features (depth)
+            depth_feat1 (torch.Tensor): [N, C, H, W] - Key/Value features (depth)
+            mask0 (torch.Tensor): [N, H, W] (optional)
+            mask1 (torch.Tensor): [N, H, W] (optional)
+        Returns:
+            fused_feat0, fused_feat1: Enhanced image features with depth information
+        """
+        fused_feat0 = image_feat0
+        fused_feat1 = image_feat1
+        
+        # Only cross-attention: image feature attends to depth feature
+        for layer in self.layers:
+            # Query=image, Key/Value=depth
+            fused_feat0 = layer(fused_feat0, depth_feat0, mask0, mask0)
+            fused_feat1 = layer(fused_feat1, depth_feat1, mask1, mask1)
+
+        return fused_feat0, fused_feat1

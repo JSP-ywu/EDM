@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .loftr_module.transformer import LocalFeatureTransformer, DepthFeatureTransformer
+from .loftr_module.transformer import LocalFeatureTransformer, DepthFeatureTransformer, FeatureFusionTransformer
 
 
 class Conv2d_BN_Act(nn.Sequential):
@@ -49,6 +49,8 @@ class CIM(nn.Module):
 
         self.block_dims = config["backbone"]["block_dims"]
         self.drop = config["fine"]["droprate"]
+        self.use_inject = config["use_inject"]
+        self.use_fusion = config["use_fusion"]
 
         self.fc32 = Conv2d_BN_Act(
             self.block_dims[-1], self.block_dims[-1], 1, drop=self.drop
@@ -97,16 +99,17 @@ class CIM(nn.Module):
         )
 
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
-        if config["edm"]["use_inject"]:
+        if self.use_inject:
             self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config["depth_injection"])
-        if config["edm"]["use_fusion"]:
-            self.depth_fusion = DepthFeatureFusion(config["depth_fusion"])
+        if self.use_fusion:
+            self.depth_fusion = DepthFeatureFusion(config)
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
         if isinstance(ms_feats, dict) and "rgb" in ms_feats and "depth" in ms_feats:
             rgb_feats = ms_feats["rgb"]
             depth_feats = ms_feats["depth"]
-            if self.depth_injector is not None:
+            if self.use_inject:
+                # Inject depth features to image feature(1/16)
                 depth0, depth1 = depth_feats
                 depth0, depth1 = self.depth_injector(depth0, depth1, mask_c0, mask_c1)
                 f8, f16, f32 = rgb_feats
@@ -117,8 +120,6 @@ class CIM(nn.Module):
                 depth_cat = torch.cat([depth0, depth1], dim=0)
                 f16 = f16 + depth_cat
                 ms_feats = (f8, f16, f32)
-            if self.depth_fusion is not None:
-                return self.depth_fusion(ms_feats, mask_c0, mask_c1)
 
         if len(ms_feats) == 3:  # same image shape
             f8, f16, f32 = ms_feats
@@ -129,6 +130,13 @@ class CIM(nn.Module):
             f32 = torch.cat([f32_0, f32_1], dim=0)
 
             f32_up = F.interpolate(f32, scale_factor=2.0, mode="bilinear")
+            # Fuse depth features into F32->F16
+            if self.use_fusion:
+                depth0, depth1 = depth_feats
+                # Apply depth fusion to the upscaled f32 feature
+                f32_up_0, f32_up_1 = f32_up.chunk(2, dim=0)
+                f32_up_0, f32_up_1 = self.depth_fusion(f32_up_0, f32_up_1, depth0, depth1, mask_c0, mask_c1)
+                f32_up = torch.cat([f32_up_0, f32_up_1], dim=0)
             att32_up = F.interpolate(self.att32(
                 f32), scale_factor=2.0, mode="bilinear")
             f16 = self.fc16(f16)
@@ -184,10 +192,12 @@ class DepthFeatureFusion(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.layer = DepthFeatureTransformer(config)
+        self.depth_layer = DepthFeatureTransformer(config["depth_fusion"], is16=True)
+        self.fusion_layer = FeatureFusionTransformer(config["depth_fusion"], is16=True)
+        self.pre_extracted_depth = config["pre_extracted_depth"]
+        self.depth_proj = nn.Conv2d(384, 256, kernel_size=1)
 
-    def forward(self, feat_c0, feat_c1, ms_feats, mask_c0=None, mask_c1=None):
-        depth0, depth1 = ms_feats["depth"]
+    def forward(self, feat_c0, feat_c1, depth0, depth1, mask_c0=None, mask_c1=None):
         if self.pre_extracted_depth:
             depth0 = depth0.permute(0, 2, 1).reshape(-1, 384, 37, 37)
             depth1 = depth1.permute(0, 2, 1).reshape(-1, 384, 37, 37)
@@ -195,7 +205,26 @@ class DepthFeatureFusion(nn.Module):
             # Remove cls token when feature is extracted while training
             depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
             depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
-        return ms_feats
+
+        # Project depth features to match image feature dimensions
+        depth0 = self.depth_proj(depth0)  # [B, 384, 37, 37]
+        depth1 = self.depth_proj(depth1)  # -> [B, 256, 37, 37]
+
+        # Resize depth features to match image feature spatial dimensions
+        target_size = feat_c0.shape[2:]  # Get H, W from feat_c0
+        depth0 = F.interpolate(depth0, size=target_size, mode='bilinear', align_corners=False)
+        depth1 = F.interpolate(depth1, size=target_size, mode='bilinear', align_corners=False)
+        
+        # Depth feature cross-attention
+        depth0, depth1 = self.depth_layer(depth0, depth1, mask_c0, mask_c1)
+
+        # Fuse depth and image features
+        fused_c0, fused_c1 = self.fusion_transformer(
+            feat_c0, feat_c1,  # Query: image features
+            depth0, depth1,  # Key/Value: depth features
+            mask_c0, mask_c1
+        )
+        return fused_c0, fused_c1
 
 class DepthFeatureInjection(nn.Module):
     """Inject DepthAnythingV2 features into EDM via cross-attention or projection"""
