@@ -432,3 +432,51 @@ class LocalFeatureTransformer(nn.Module):
                 raise KeyError
 
         return feat0, feat1
+
+class DepthFeatureTransformer(nn.Module):
+    """
+    A Depth Feature Transformer module.
+    Inspired by the LoFTR
+    Depth feature is extracted from the DepthAnything model, so no need to add another self-attention layer.
+    """
+
+    def __init__(self, config, is16=False):
+        super(DepthFeatureTransformer, self).__init__()
+        self.d_model = config["d_model"]
+        self.nhead = config["nhead"]
+        self.layer_names = config["layer_names"]
+        self.agg_size0, self.agg_size1 = config["agg_size0"], config["agg_size1"]
+
+        cross_layer = AG_RoPE_EncoderLayer(
+            config["d_model"],
+            config["nhead"],
+            config["agg_size0"],
+            config["agg_size1"],
+            False,
+            config["npe"],
+            is16=is16
+        )
+
+        self.layers = nn.ModuleList(
+            [copy.deepcopy(cross_layer) for _ in self.layer_names]
+        )
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, feat0, feat1, mask0=None, mask1=None, data=None):
+        """
+        Args:
+            feat0 (torch.Tensor): [N, C, H, W]
+            feat1 (torch.Tensor): [N, C, H, W]
+            mask0 (torch.Tensor): [N, L] (optional)
+            mask1 (torch.Tensor): [N, S] (optional)
+        """
+        for i, (layer, name) in enumerate(zip(self.layers, self.layer_names)):
+            feat0 = layer(feat0, feat1, mask0, mask1)
+            feat1 = layer(feat1, feat0, mask1, mask0)
+
+        return feat0, feat1

@@ -1,0 +1,6 @@
+[INFO] Process-group initialised (world_size=4)
+[INFO] Loading depth-anything/Depth-Anything-V2-Small-hf …
+[INFO] Found 1867358 images to process.
+[INFO] Found 1867358 images to process.
+[INFO] Found 1867358 images to process.
+[INFO] Found 1867358 images to process.

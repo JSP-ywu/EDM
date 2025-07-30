@@ -25,7 +25,6 @@ class EDM(nn.Module):
         # Load when pre-trained weights is not available or test time
         if self.config["edm"]["pre_extracted_depth"]:
             self.depth_extractor = DepthAnythingFeatureExtractor(config)
-        # self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config)
         self.neck = CIM(config, depth_injector=self.depth_injector)
         # self.neck = CIM(config)
         self.coarse_matching = CoarseMatching(config)

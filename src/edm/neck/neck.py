@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .loftr_module.transformer import LocalFeatureTransformer
+from .loftr_module.transformer import LocalFeatureTransformer, DepthFeatureTransformer
 
 
 class Conv2d_BN_Act(nn.Sequential):
@@ -44,7 +44,7 @@ class Conv2d_BN_Act(nn.Sequential):
 class CIM(nn.Module):
     """Feature Aggregation, Correlation Injection Module"""
 
-    def __init__(self, config, depth_injector=None, depth_fusion=None):
+    def __init__(self, config):
         super(CIM, self).__init__()
 
         self.block_dims = config["backbone"]["block_dims"]
@@ -97,10 +97,10 @@ class CIM(nn.Module):
         )
 
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
-        if depth_injector is not None:
-            self.depth_injector = depth_injector
-        if depth_fusion is not None:
-            self.depth_fusion = depth_fusion
+        if config["edm"]["use_inject"]:
+            self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config)
+        if config["edm"]["use_fusion"]:
+            self.depth_fusion = DepthFeatureFusion(config)
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
         if isinstance(ms_feats, dict) and "rgb" in ms_feats and "depth" in ms_feats:
@@ -182,14 +182,14 @@ class DepthFeatureFusion(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.fusion = CIM(config, depth_injector=DepthFeatureInjection(
-            in_dim=384, out_dim=256, config=config))
+        self.layer = DepthFeatureTransformer(config)
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
         """
-        ms_feats: (f8, f16, f32) or (f8_0, f16_0, f32_0, f8_1, f16_1, f32_1)
+        ms_feats: (f8, f16, f32)
+        depth_feats: (B, 1369, 384)
         """
-        return self.fusion(ms_feats, mask_c0, mask_c1)
+        return
 
 class DepthFeatureInjection(nn.Module):
     """Inject DepthAnythingV2 features into EDM via cross-attention or projection"""

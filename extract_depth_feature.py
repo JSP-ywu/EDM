@@ -61,8 +61,9 @@ def worker(rank, world_size, args):
     # Glob all image paths and split
     all_imgs = sorted(
         p for p in Path(args.image_dir).rglob("*")
-        if p.suffix.lower() == ".jpg"
+        if p.suffix.lower() == ".jpg" and not p.with_suffix(".pth").exists() # adjust suffix as needed
     )
+    print(f"[INFO] Found {len(all_imgs)} images to process.")
     shard = all_imgs[rank::world_size]     # round-robin
 
     # Process images in batches
@@ -80,7 +81,7 @@ def worker(rank, world_size, args):
         for tok, pth in zip(tokens, batch_paths):
             base = pth.with_suffix("")
             save_pth(tok.unsqueeze(0), base.with_suffix(".pth"))
-            save_h5(tok.unsqueeze(0), base.with_suffix(".h5"))
+            # save_h5(tok.unsqueeze(0), base.with_suffix(".h5"))
 
     dist.barrier()
     if rank == 0:
