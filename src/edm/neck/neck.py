@@ -51,6 +51,7 @@ class CIM(nn.Module):
         self.drop = config["fine"]["droprate"]
         self.use_inject = config["use_inject"]
         self.use_fusion = config["use_fusion"]
+        self.use_depth_map = config["use_depth_map"]
 
         self.fc32 = Conv2d_BN_Act(
             self.block_dims[-1], self.block_dims[-1], 1, drop=self.drop
@@ -103,6 +104,8 @@ class CIM(nn.Module):
             self.depth_injector = DepthFeatureInjection(in_dim=384, out_dim=256, config=config["depth_injection"])
         if self.use_fusion:
             self.depth_fusion = DepthFeatureFusion(config)
+        if self.use_depth_map:
+            self.depth_fusion = DepthFeatureFusion(config, self.use_depth_map)
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None):
         if isinstance(ms_feats, dict) and "rgb" in ms_feats and "depth" in ms_feats:
@@ -137,6 +140,7 @@ class CIM(nn.Module):
                 f32_up_0, f32_up_1 = f32_up.chunk(2, dim=0)
                 f32_up_0, f32_up_1 = self.depth_fusion(f32_up_0, f32_up_1, depth0, depth1, mask_c0, mask_c1)
                 f32_up = torch.cat([f32_up_0, f32_up_1], dim=0)
+            
             att32_up = F.interpolate(self.att32(
                 f32), scale_factor=2.0, mode="bilinear")
             f16 = self.fc16(f16)
@@ -189,33 +193,37 @@ class DepthFeatureFusion(nn.Module):
     Feature Fusion Module for DepthAnythingV2 + EDM
     """
 
-    def __init__(self, config):
+    def __init__(self, config, use_depth_map=False):
         super().__init__()
         self.config = config
         self.depth_layer = DepthFeatureTransformer(config["depth_fusion"], is16=True)
         self.fusion_layer = FeatureFusionTransformer(config["depth_fusion"], is16=True)
         self.pre_extracted_depth = config["pre_extracted_depth"]
-        self.depth_proj = nn.Conv2d(384, 256, kernel_size=1)
+        if not config["use_depth_map"]:
+            self.depth_proj = nn.Conv2d(384, 256, kernel_size=1)
 
     def forward(self, feat_c0, feat_c1, depth0, depth1, mask_c0=None, mask_c1=None):
-        if self.pre_extracted_depth:
+        if self.pre_extracted_depth and not self.config["use_depth_map"]:
             depth0 = depth0.permute(0, 2, 1).reshape(-1, 384, 37, 37)
-            depth1 = depth1.permute(0, 2, 1).reshape(-1, 384, 37, 37)
+            depth1 = depth1.permute(0, 2, 1).reshape(-1, 384, 37, 37)# Project depth features to match image feature dimensions
+            depth0 = self.depth_proj(depth0)  # [B, 384, 37, 37]
+            depth1 = self.depth_proj(depth1)  # -> [B, 256, 37, 37]
         else:
             # Remove cls token when feature is extracted while training
             depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
             depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
-
-        # Project depth features to match image feature dimensions
-        depth0 = self.depth_proj(depth0)  # [B, 384, 37, 37]
-        depth1 = self.depth_proj(depth1)  # -> [B, 256, 37, 37]
+            depth0 = self.depth_proj(depth0)  # [B, 384, 37, 37]
+            depth1 = self.depth_proj(depth1)  # -> [B, 256, 37, 37]
 
         # Resize depth features to match image feature spatial dimensions
-        target_size = feat_c0.shape[2:]  # Get H, W from feat_c0
-        depth0 = F.interpolate(depth0, size=target_size, mode='bilinear', align_corners=False)
-        depth1 = F.interpolate(depth1, size=target_size, mode='bilinear', align_corners=False)
+        # Resize depth features to match image feature spatial dimensions (if needed)
+        target_size = feat_c0.shape[2:]  # (H, W)
+        if depth0.shape[2:] != target_size:
+            depth0 = F.interpolate(depth0, size=target_size, mode="bilinear", align_corners=False)
+        if depth1.shape[2:] != target_size:
+            depth1 = F.interpolate(depth1, size=target_size, mode="bilinear", align_corners=False)
         
-        # Depth feature cross-attention
+        # Depth feature transformer
         depth0, depth1 = self.depth_layer(depth0, depth1, mask_c0, mask_c1)
 
         # Fuse depth and image features

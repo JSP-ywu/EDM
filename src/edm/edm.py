@@ -71,9 +71,15 @@ class EDM(nn.Module):
                                                                     data["depth_feat_image1"])
                     data["depth_feat0"] = depth_feat0
                     data["depth_feat1"] = depth_feat1
+            if self.config["depth_map_fusion"]:
+                dfeats = self.backbone(
+                    torch.cat([data["depth0"], data["depth1"]], dim=0)
+                )
+                _, df16, _, _ = dfeats
+                data["depth_feat0"], data["depth_feat1"] = df16.chunk(2)
             ms_feats = {
                 "rgb": (f8, f16, f32),
-                "depth": (data["depth_feat0"], data["depth_feat1"])
+                "depth": (data["depth_feat0"], data["depth_feat1"]) 
             }
             feat_f0, feat_f1 = f8_fine.chunk(2)
         else:

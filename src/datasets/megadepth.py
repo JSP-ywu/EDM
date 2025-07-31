@@ -22,6 +22,7 @@ class MegaDepthDataset(Dataset):
         augment_fn=None,
         fp16=False,
         pre_extracted_depth=False,
+        depth_map_fusion=False,
         **kwargs
     ):
         """
@@ -76,6 +77,7 @@ class MegaDepthDataset(Dataset):
 
         self.fp16 = fp16
         self.pre_extracted_depth = pre_extracted_depth
+        self.depth_map_fusion = depth_map_fusion
 
     def __len__(self):
         return len(self.pair_infos)
@@ -174,6 +176,8 @@ class MegaDepthDataset(Dataset):
                     recompute_scale_factor=False,
                 )[0].bool()
             data.update({"mask0": ts_mask_0, "mask1": ts_mask_1})
+        if self.depth_map_fusion:
+            return data
         # If using pre-extracted depth features, add them to data
         if self.pre_extracted_depth:
             data.update({"depth_feat0": depth_feat0, "depth_feat1": depth_feat1})

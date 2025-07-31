@@ -446,7 +446,17 @@ class DepthFeatureTransformer(nn.Module):
         self.nhead = config["nhead"]
         self.layer_names = config["layer_names"]
         self.agg_size0, self.agg_size1 = config["agg_size0"], config["agg_size1"]
+        self.rope = config["rope"]
 
+        self_layer = AG_RoPE_EncoderLayer(
+            config["d_model"],
+            config["nhead"],
+            config["agg_size0"],
+            config["agg_size1"],
+            config["rope"],
+            config["npe"],
+            is16=is16
+        )
         cross_layer = AG_RoPE_EncoderLayer(
             config["d_model"],
             config["nhead"],
@@ -458,7 +468,14 @@ class DepthFeatureTransformer(nn.Module):
         )
 
         self.layers = nn.ModuleList(
-            [copy.deepcopy(cross_layer) for _ in self.layer_names]
+            [
+                (
+                    copy.deepcopy(self_layer)
+                    if _ == "self"
+                    else copy.deepcopy(cross_layer)
+                )
+                for _ in self.layer_names
+            ]
         )
         self._reset_parameters()
 
@@ -476,8 +493,14 @@ class DepthFeatureTransformer(nn.Module):
             mask1 (torch.Tensor): [N, S] (optional)
         """
         for i, (layer, name) in enumerate(zip(self.layers, self.layer_names)):
-            feat0 = layer(feat0, feat1, mask0, mask1)
-            feat1 = layer(feat1, feat0, mask1, mask0)
+            if name == "self":
+                feat0 = layer(feat0, feat0, mask0, mask0)
+                feat1 = layer(feat1, feat1, mask1, mask1)
+            elif name == "cross":
+                feat0 = layer(feat0, feat1, mask0, mask1)
+                feat1 = layer(feat1, feat0, mask1, mask0)
+            else:
+                raise KeyError
 
         return feat0, feat1
     

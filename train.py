@@ -71,14 +71,6 @@ def parse_args():
         help="options: [inference, pytorch], or leave it unset",
     )
     parser.add_argument(
-        "--resume",
-        type=lambda x: bool(strtobool(x)),
-        nargs="?",
-        const=True,
-        default=False,
-        help="Resume training from checkpoint (--ckpt_path)"
-    )
-    parser.add_argument(
         "--pre_extracted_depth",
         type=lambda x: bool(strtobool(x)),
         nargs="?",
@@ -186,8 +178,9 @@ def main():
         profiler=profiler,
     )
     loguru_logger.info(f"Trainer initialized!")
-    loguru_logger.info(f"Start training! (If resume is True, it will load the checkpoint from {args.ckpt_path})")
-    trainer.fit(model, datamodule=data_module, ckpt_path=args.ckpt_path if args.resume else None)
+    loguru_logger.info(f"Start training!")
+    # Model will be resumed if ckpt_path is provided
+    trainer.fit(model, datamodule=data_module, ckpt_path=args.ckpt_path if not args.ckpt_path else None)
 
 
 if __name__ == "__main__":

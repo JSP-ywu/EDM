@@ -15,7 +15,8 @@ _CN.EDM.DEPLOY = False # export onnx model
 _CN.EDM.EVAL_TIMES = 1
 _CN.EDM.PRE_EXTRACTED_DEPTH = False # Use pre-extracted depth maps
 _CN.EDM.USE_INJECT= False  # Inject depth features into the model
-_CN.EDM.USE_FUSION = True  # Use depth fusion in the neck
+_CN.EDM.USE_FUSION = False  # Use depth fusion in the neck
+_CN.EDM.USE_DEPTH_MAP = True # Use depth maps for fusion
 
 # 3. Coarse-Matching config
 _CN.EDM.BACKBONE = CN()
@@ -42,11 +43,11 @@ _CN.EDM.DEPTH_INJECTION.NPE = None
 
 _CN.EDM.DEPTH_FUSION = CN()
 _CN.EDM.DEPTH_FUSION.D_MODEL = 256
-_CN.EDM.DEPTH_FUSION.LAYER_NAMES = ["cross"] * 2 # Depth Anything V2 feature is already gone through self-att layer
+_CN.EDM.DEPTH_FUSION.LAYER_NAMES = ["self", "cross"] * 2 # Depth Anything V2 feature is already gone through self-att layer
 _CN.EDM.DEPTH_FUSION.NHEAD = 8
 _CN.EDM.DEPTH_FUSION.AGG_SIZE0 = 1
 _CN.EDM.DEPTH_FUSION.AGG_SIZE1 = 1
-_CN.EDM.DEPTH_FUSION.ROPE = False
+_CN.EDM.DEPTH_FUSION.ROPE = True
 _CN.EDM.DEPTH_FUSION.NPE = None
 
 # 3. Coarse-Matching config
