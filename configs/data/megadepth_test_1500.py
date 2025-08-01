@@ -11,8 +11,8 @@ cfg.DATASET.MIN_OVERLAP_SCORE_TEST = 0.0
 
 cfg.EDM.TRAIN_RES_H = 832
 cfg.EDM.TRAIN_RES_W = 832
-cfg.EDM.TEST_RES_H = 1152
-cfg.EDM.TEST_RES_W = 1152
+cfg.EDM.TEST_RES_H = 832
+cfg.EDM.TEST_RES_W = 832
 
 cfg.EDM.NECK.NPE = [
     cfg.EDM.TRAIN_RES_H,
@@ -21,6 +21,13 @@ cfg.EDM.NECK.NPE = [
     cfg.EDM.TEST_RES_W,
 ]
 cfg.EDM.DEPTH_INJECTION.NPE = [
+    cfg.EDM.TRAIN_RES_H,
+    cfg.EDM.TRAIN_RES_W,
+    cfg.EDM.TEST_RES_H,
+    cfg.EDM.TEST_RES_W,
+]
+
+cfg.EDM.DEPTH_FUSION.NPE = [
     cfg.EDM.TRAIN_RES_H,
     cfg.EDM.TRAIN_RES_W,
     cfg.EDM.TEST_RES_H,

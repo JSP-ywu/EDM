@@ -22,8 +22,11 @@ class EDM(nn.Module):
 
         # Modules
         self.backbone = ResNet18(config)
+        if self.config["use_depth_map"]:
+            print("[INFO] Using Seperate backbone for depth map...")
+            self.depth_backbone = ResNet18(config, True)  # for depth map fusion
         # Load when pre-trained weights is not available or test time
-        if not self.config["pre_extracted_depth"]:
+        if not self.config["pre_extracted_depth"] and not self.config["use_depth_map"]:
             print("[INFO] Using DepthAnythingFeatureExtractor...")
             self.depth_extractor = DepthAnythingFeatureExtractor(config)
         self.neck = CIM(config)
@@ -60,22 +63,32 @@ class EDM(nn.Module):
         # 1. Feature Extraction
         if data["hw0_i"] == data["hw1_i"]:
             # faster & better BN convergence
+            # print(data["image0"])
+            # print(data["image1"])
+            # print(torch.cat([data["image0"], data["image1"]], dim=0))
+            # print(data["depth0"].unsqueeze(1))
+            # print(data["depth1"].unsqueeze(1))
+            # print(torch.cat([data["depth0"].unsqueeze(1), data["depth1"].unsqueeze(1)], dim=0))
+            # assert BaseException
             feats = self.backbone(
                 torch.cat([data["image0"], data["image1"]], dim=0)
             )
             f8, f16, f32, f8_fine = feats
-            if not self.config["pre_extracted_depth"]:
+            if not self.config["pre_extracted_depth"] and not self.config["use_depth_map"]:
                 with torch.no_grad():
                     # print('[DEBUG] Extracting depth features...')
                     depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],
                                                                     data["depth_feat_image1"])
                     data["depth_feat0"] = depth_feat0
                     data["depth_feat1"] = depth_feat1
-            if self.config["depth_map_fusion"]:
-                dfeats = self.backbone(
-                    torch.cat([data["depth0"], data["depth1"]], dim=0)
+            if self.config["use_depth_map"]:
+                # print(data['depth0_norm'], data['depth1_norm'])
+                # print(torch.cat([data["depth0_norm"], data["depth1_norm"]], dim=0))
+                # print("[INFO] Using depth map fusion...")
+                dfeats = self.depth_backbone(
+                    torch.cat([data["depth0_norm"], data["depth1_norm"]], dim=0)
                 )
-                _, df16, _, _ = dfeats
+                df16 = dfeats
                 data["depth_feat0"], data["depth_feat1"] = df16.chunk(2)
             ms_feats = {
                 "rgb": (f8, f16, f32),

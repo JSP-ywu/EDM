@@ -53,10 +53,11 @@ class ResNet18(nn.Module):
     Fewer channels
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, is_depth=False):
         super().__init__()
         # Config
         block_dims = config["backbone"]["block_dims"]
+        self.is_depth = is_depth
 
         # Networks
         self.conv1 = nn.Conv2d(
@@ -76,17 +77,18 @@ class ResNet18(nn.Module):
         self.layer4 = self._make_layer(
             BasicBlock, block_dims[2], block_dims[3], stride=2
         )  # 1/16
-        self.layer5 = self._make_layer(
-            BasicBlock, block_dims[3], block_dims[4], stride=2
-        )  # 1/32
+        if not self.is_depth:
+            self.layer5 = self._make_layer(
+                BasicBlock, block_dims[3], block_dims[4], stride=2
+            )  # 1/32
 
-        # For fine matching
-        self.fine_conv = nn.Sequential(
-            self._make_layer(
-                BasicBlock, block_dims[2], block_dims[2], stride=1),
-            conv1x1(block_dims[2], block_dims[4]),
-            nn.BatchNorm2d(block_dims[4]),
-        )
+            # For fine matching
+            self.fine_conv = nn.Sequential(
+                self._make_layer(
+                    BasicBlock, block_dims[2], block_dims[2], stride=1),
+                conv1x1(block_dims[2], block_dims[4]),
+                nn.BatchNorm2d(block_dims[4]),
+            )
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -109,8 +111,11 @@ class ResNet18(nn.Module):
         x2 = self.layer2(x1)  # 1/4
         x3 = self.layer3(x2)  # 1/8
         x4 = self.layer4(x3)  # 1/16
-        x5 = self.layer5(x4)  # 1/32
+        if self.is_depth:
+            return x4
+        else:
+            x5 = self.layer5(x4)  # 1/32
 
-        xf = self.fine_conv(x3)  # 1/8
+            xf = self.fine_conv(x3)  # 1/8
 
-        return [x3, x4, x5, xf]
+            return [x3, x4, x5, xf]

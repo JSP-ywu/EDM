@@ -180,7 +180,7 @@ def main():
     loguru_logger.info(f"Trainer initialized!")
     loguru_logger.info(f"Start training!")
     # Model will be resumed if ckpt_path is provided
-    trainer.fit(model, datamodule=data_module, ckpt_path=args.ckpt_path if not args.ckpt_path else None)
+    trainer.fit(model, datamodule=data_module, ckpt_path=args.ckpt_path if args.ckpt_path else None)
 
 
 if __name__ == "__main__":

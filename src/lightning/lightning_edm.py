@@ -45,9 +45,18 @@ class PL_EDM(pl.LightningModule):
         # Matcher: EDM
         self.matcher = EDM(config=_config["edm"])
         self.loss = EDMLoss(_config)
-
+        # if hasattr(self.matcher, "depth_backbone"):
+        #     for name, p in self.matcher.depth_backbone.named_parameters():
+        #         def _dbg_hook(grad, n=name):
+        #             print(f"[depth_grad] {n:45s} | mean(|grad|) = {grad.abs().mean():.4e}")
+        #         p.register_hook(_dbg_hook)
+        # if hasattr(self.matcher, "backbone"):
+        #     for name, p in self.matcher.backbone.named_parameters():
+        #         def _dbg_hook(grad, n=name):
+        #             print(f"[bb_grad] {n:45s} | mean(|grad|) = {grad.abs().mean():.4e}")
+        #         p.register_hook(_dbg_hook)
         # Freeze depth extractor
-        if not self.config.EDM.PRE_EXTRACTED_DEPTH:
+        if not self.config.EDM.PRE_EXTRACTED_DEPTH and not self.config.EDM.USE_DEPTH_MAP:
             self.matcher.depth_extractor.requires_grad_(False)
             self.matcher.depth_extractor.eval()
 
@@ -103,7 +112,7 @@ class PL_EDM(pl.LightningModule):
         # Ensure images are float and scaled properly
         batch["image0"] = batch["image0"].float().clamp(0, 1)
         batch["image1"] = batch["image1"].float().clamp(0, 1)
-        if not self.config.EDM.PRE_EXTRACTED_DEPTH:
+        if not self.config.EDM.PRE_EXTRACTED_DEPTH and not self.config.EDM.USE_DEPTH_MAP:
             batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
             batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
 
@@ -272,12 +281,12 @@ class PL_EDM(pl.LightningModule):
                 for k, v in loss_scalars.items():
                     mean_v = torch.stack(v).mean()
                     self.logger.experiment.log(
-                        {f"val_{valset_idx}/avg_{k}": mean_v}, step=cur_epoch
+                        {f"val_{valset_idx}/avg_{k}": mean_v}, step=self.global_step
                     )
 
                 for k, v in val_metrics_4tb.items():
                     self.logger.experiment.log(
-                        {f"metrics_{valset_idx}/{k}": v}, step=cur_epoch
+                        {f"metrics_{valset_idx}/{k}": v}, step=self.global_step
                     )
 
                 for k, v in figures.items():
@@ -285,7 +294,7 @@ class PL_EDM(pl.LightningModule):
                         for plot_idx, fig in enumerate(v):
                             self.logger.experiment.log(
                                 {f"val_match_{valset_idx}/{k}/pair-{plot_idx}": fig},
-                                step=cur_epoch,
+                                step=self.global_step,
                             )
                             plt.close(fig)  # close the figure to free memory
             plt.close("all")
@@ -302,7 +311,7 @@ class PL_EDM(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         batch["image0"] = batch["image0"].float().clamp(0, 1)
         batch["image1"] = batch["image1"].float().clamp(0, 1)
-        if not self.config.EDM.PRE_EXTRACTED_DEPTH:
+        if not self.config.EDM.PRE_EXTRACTED_DEPTH and not self.config.EDM.USE_DEPTH_MAP:
             batch["depth_feat_image0"] = batch["depth_feat_image0"].float().clamp(0, 1)
             batch["depth_feat_image1"] = batch["depth_feat_image1"].float().clamp(0, 1)
 

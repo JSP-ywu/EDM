@@ -21,6 +21,8 @@ __pycache__
 # Temporary files
 split_train_val_scannet.py
 tb_check.py
+vis.ipynb
+
 
 # Logs
 logs/

@@ -16,8 +16,8 @@ n_gpus_per_node=1
 torch_num_workers=8
 batch_size=1
 
-ckpt_path="/workspace/EDM/logs/tb_logs/edm_outdoor/version_6/checkpoints/epoch=29-auc@5=0.551-auc@10=0.710-auc@20=0.826.ckpt"
-size=1152 # follow ELoFTR's setting
+ckpt_path="/workspace/EDM/logs/wandb_logs/depth_fusion_depth_map_f16/checkpoints/epoch=18-auc@5=0.530-auc@10=0.690-auc@20=0.809.ckpt"
+size=832 # follow ELoFTR's setting
 
 python -u ./test.py \
     ${data_cfg_path} \

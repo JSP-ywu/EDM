@@ -134,7 +134,8 @@ class CIM(nn.Module):
 
             f32_up = F.interpolate(f32, scale_factor=2.0, mode="bilinear")
             # Fuse depth features into F32->F16
-            if self.use_fusion:
+            if self.use_fusion or self.use_depth_map:
+                # print("[INFO]Using depth fusion or depth map fusion...")
                 depth0, depth1 = depth_feats
                 # Apply depth fusion to the upscaled f32 feature
                 f32_up_0, f32_up_1 = f32_up.chunk(2, dim=0)
@@ -203,12 +204,12 @@ class DepthFeatureFusion(nn.Module):
             self.depth_proj = nn.Conv2d(384, 256, kernel_size=1)
 
     def forward(self, feat_c0, feat_c1, depth0, depth1, mask_c0=None, mask_c1=None):
-        if self.pre_extracted_depth and not self.config["use_depth_map"]:
+        if self.pre_extracted_depth:
             depth0 = depth0.permute(0, 2, 1).reshape(-1, 384, 37, 37)
             depth1 = depth1.permute(0, 2, 1).reshape(-1, 384, 37, 37)# Project depth features to match image feature dimensions
             depth0 = self.depth_proj(depth0)  # [B, 384, 37, 37]
             depth1 = self.depth_proj(depth1)  # -> [B, 256, 37, 37]
-        else:
+        elif not self.config["use_depth_map"]:
             # Remove cls token when feature is extracted while training
             depth0 = depth0[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)
             depth1 = depth1[:,1:].permute(0, 2, 1).reshape(-1, 384, 37, 37)

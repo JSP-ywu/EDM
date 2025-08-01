@@ -79,6 +79,22 @@ class MegaDepthDataset(Dataset):
         self.pre_extracted_depth = pre_extracted_depth
         self.depth_map_fusion = depth_map_fusion
 
+    def _norm(self, d, target_size=None):
+        if d.dim() == 2:
+            d = d.unsqueeze(0) # (h, w) -> (1, h, w)
+        d = torch.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+        d = 1.0 / (d + 1e-3)
+                # Per‑sample min‑max normalisation to [0,1]
+        d = d / d.max()
+
+        # Resize if requested (e.g. depth padded to 2000×2000)
+        if target_size is not None and d.shape[-2:] != target_size:
+            d = F.interpolate(d.unsqueeze(0), size=target_size,
+                              mode="bilinear", align_corners=False)[0]
+
+        return d.float()       # Save VRAM
+
+
     def __len__(self):
         return len(self.pair_infos)
 
@@ -109,7 +125,7 @@ class MegaDepthDataset(Dataset):
             )       
 
         # read depth. shape: (h, w)
-        if self.mode in ["train", "val"]:
+        if self.mode in ["train", "val", "test"] and self.depth_map_fusion:
             depth0 = read_megadepth_depth(
                 osp.join(self.root_dir, self.scene_info["depth_paths"][idx0]),
                 pad_to=self.depth_max_size,
@@ -122,7 +138,7 @@ class MegaDepthDataset(Dataset):
             depth0 = depth1 = torch.tensor([])
 
         # read pre-extracted depth features: 1, 1369, 384 (fixed from DepthAnything-v2-small)
-        if self.mode in ["train", "val"] and self.pre_extracted_depth:
+        if self.mode in ["train", "val", "test"] and self.pre_extracted_depth:
             depth_feat0 = read_megadepth_depth_feature(img_name0)
             depth_feat1 = read_megadepth_depth_feature(img_name1)
 
@@ -177,13 +193,18 @@ class MegaDepthDataset(Dataset):
                 )[0].bool()
             data.update({"mask0": ts_mask_0, "mask1": ts_mask_1})
         if self.depth_map_fusion:
+            target_size = image0.shape[-2:]  # (H, W) of the grayscale image
+            data.update({
+                "depth0_norm": self._norm(depth0, target_size),
+                "depth1_norm": self._norm(depth1, target_size),
+            })
             return data
         # If using pre-extracted depth features, add them to data
         if self.pre_extracted_depth:
             data.update({"depth_feat0": depth_feat0, "depth_feat1": depth_feat1})
 
         # Or add RGB images for depth extraction, it will be read when needed
-        else:
+        elif not self.depth_map_fusion:
             data.update({
                 "depth_feat_image0": image0_rgb,
                 "depth_feat_image1": image1_rgb,

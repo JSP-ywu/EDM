@@ -71,8 +71,8 @@ def worker(rank, world_size, args):
     from tqdm import tqdm
     for i in tqdm(range(0, len(shard), B), desc="Processing batches"):
         batch_paths = shard[i : i + B]
-        pil_imgs = [Image.open(p).convert("RGB").resize((480, 640), Image.BILINEAR) for p in batch_paths] # For scannet
-        # pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths] # For megadepth
+        # pil_imgs = [Image.open(p).convert("RGB").resize((480, 640), Image.BILINEAR) for p in batch_paths] # For scannet
+        pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths] # For megadepth
         tokens   = extractor(pil_imgs)          # [B,1369,384]
         # print(tokens)
         # print(pil_imgs[0])
