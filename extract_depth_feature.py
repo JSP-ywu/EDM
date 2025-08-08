@@ -1,4 +1,4 @@
-# extract_depth_feature.py  (torchrun-compatible)
+# extract_depth_feature.py  (torchrun-compatible, saves depth maps)
 # ------------------------------------------------------------------
 # example:
 # CUDA_VISIBLE_DEVICES=0,1,2,3 \
@@ -16,12 +16,12 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 
 # ------------------ model wrapper ------------------
-class DepthAnythingTokenExtractor(torch.nn.Module):
-    """Return [B, 1369, 384] token tensor without CLS"""
+class DepthAnythingDepthEstimator(torch.nn.Module):
+    """Return depth maps [B, H, W] resized to processor input size"""
     def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
         super().__init__()
         if dist.get_rank() == 0:
-            print(f"[INFO] Loading {model_name} …")
+            print(f"[INFO] Loading depth estimator: {model_name} …")
         self.processor = AutoImageProcessor.from_pretrained(
             model_name, trust_remote_code=True
         )
@@ -31,11 +31,22 @@ class DepthAnythingTokenExtractor(torch.nn.Module):
         self.model.eval()
 
     @torch.no_grad()
-    def forward(self, pil_imgs):                       # list[PIL]
+    def forward(self, pil_imgs):                       # list[PIL.Image.Image]
+        # Prepare inputs
         inputs = self.processor(images=pil_imgs, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        outs   = self.model(**inputs, output_hidden_states=True)
-        return outs.hidden_states[-1][:, 1:]           # [B,1370,384]
+        device = next(self.model.parameters()).device
+        pixel_values = inputs["pixel_values"].to(device)             # [B,3,H,W]
+        # Forward pass
+        outputs = self.model(pixel_values=pixel_values)
+        pred = outputs.predicted_depth                               # [B,h,w]
+        # Upsample to match input resolution
+        pred = torch.nn.functional.interpolate(
+            pred.unsqueeze(1),
+            size=pixel_values.shape[2:],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze(1)                                                 # [B,H,W]
+        return pred
 
 
 # ------------------ io utils -----------------------
@@ -46,22 +57,22 @@ def save_pth(tensor, path):
 def save_h5(tensor, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
-        f.create_dataset("tokens", data=tensor.cpu().numpy(), compression="gzip")
+        f.create_dataset("depth", data=tensor.cpu().numpy(), compression="gzip")
 
 
 # ------------------ worker logic -------------------
 def worker(rank, world_size, args):
     if rank == 0:
-        print(f"[INFO] Process-group initialised (world_size={world_size})")
+        print(f"[INFO] Process-group initialised (world_size={world_size}) — saving depth maps")
     torch.cuda.set_device(rank)
 
-    extractor = DepthAnythingTokenExtractor().to(rank)
+    extractor = DepthAnythingDepthEstimator().to(rank)
     extractor = DDP(extractor, device_ids=[rank])
 
     # Glob all image paths and split
     all_imgs = sorted(
         p for p in Path(args.image_dir).rglob("*")
-        if p.suffix.lower() == ".jpg" and not p.with_suffix(".pth").exists() # adjust suffix as needed
+        if p.suffix.lower() == ".jpg" and not p.with_suffix(".npy").exists()  # adjust suffix as needed
     )
     print(f"[INFO] Found {len(all_imgs)} images to process.")
     shard = all_imgs[rank::world_size]     # round-robin
@@ -71,17 +82,23 @@ def worker(rank, world_size, args):
     from tqdm import tqdm
     for i in tqdm(range(0, len(shard), B), desc="Processing batches"):
         batch_paths = shard[i : i + B]
-        # pil_imgs = [Image.open(p).convert("RGB").resize((480, 640), Image.BILINEAR) for p in batch_paths] # For scannet
-        pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths] # For megadepth
-        tokens   = extractor(pil_imgs)          # [B,1369,384]
-        # print(tokens)
-        # print(pil_imgs[0])
-        # print(pil_imgs)
-
-        for tok, pth in zip(tokens, batch_paths):
+        # For MegaDepth training setup (matches default 832×832 in config)
+        pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths]
+        # If using ScanNet, you may prefer (480, 640)
+        # pil_imgs = [Image.open(p).convert("RGB").resize((480, 640), Image.BILINEAR) for p in batch_paths]
+        depths   = extractor(pil_imgs)          # [B,H,W], float32
+        for depth, pth in zip(depths, batch_paths):
             base = pth.with_suffix("")
-            save_pth(tok.unsqueeze(0), base.with_suffix(".pth"))
-            # save_h5(tok.unsqueeze(0), base.with_suffix(".h5"))
+            # Save as .npy for easy loading elsewhere; change to .pth/.h5 if preferred
+            npy_path = base.with_suffix(".npy")
+            pth_path = base.with_suffix(".pth")
+            # Numpy
+            import numpy as _np
+            # _np.save(npy_path, depth.cpu().numpy())
+            # Torch (optional)
+            # save_pth(depth, pth_path)
+            # HDF5 (optional, comment out if not needed)
+            save_h5(depth, base.with_suffix(".h5"))
 
     dist.barrier()
     if rank == 0:
