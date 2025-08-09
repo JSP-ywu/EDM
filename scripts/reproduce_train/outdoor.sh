@@ -16,7 +16,7 @@ n_gpus_per_node=8
 torch_num_workers=8
 batch_size=4
 pin_memory=true
-exp_name="depth_fusion_depth_map_diffbb_f16"
+exp_name="depth_fusion_depth_map_diffbb_f16_da_map"
 ckpt=""
 pre_extracted_depth=False
 

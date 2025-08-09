@@ -169,6 +169,17 @@ def read_megadepth_depth(path, pad_to=None):
     depth = torch.from_numpy(depth).float()  # (h, w)
     return depth
 
+def read_megadepth_depth_fusion(path, pad_to=None):
+    if str(path).startswith("s3://"):
+        depth = load_array_from_s3(path, MEGADEPTH_CLIENT, None, use_h5py=True)
+    else:
+        path = Path(path)
+        depth = np.array(h5py.File(path.with_suffix('.h5'), "r")["depth"])
+    if pad_to is not None:
+        depth, _ = pad_bottom_right(depth, pad_to, ret_mask=False)
+    depth = torch.from_numpy(depth).float()  # (h, w)
+    return depth
+
 def read_megadepth_depth_feature(path):
     """
     Load depth‐token features extracted by ``extract_depth_feature.py``.

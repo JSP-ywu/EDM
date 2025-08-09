@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 from loguru import logger
 
-from src.utils.dataset import read_megadepth_gray, read_megadepth_depth, read_megadepth_rgb, read_megadepth_depth_feature
+from src.utils.dataset import read_megadepth_gray, read_megadepth_depth, read_megadepth_rgb, read_megadepth_depth_feature, read_megadepth_depth_fusion
 
 
 class MegaDepthDataset(Dataset):
@@ -82,17 +82,26 @@ class MegaDepthDataset(Dataset):
     def _norm(self, d, target_size=None):
         if d.dim() == 2:
             d = d.unsqueeze(0) # (h, w) -> (1, h, w)
+        d = d.float()
         d = torch.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
-        d = 1.0 / (d + 1e-3)
-                # Per‑sample min‑max normalisation to [0,1]
-        d = d / d.max()
+        valid_mask = (d > 0) & torch.isfinite(d)
+        valid_pixels = d[valid_mask]
+        if valid_pixels.numel() == 0:
+            # No valid pixels, return zero tensor of same shape
+            d_norm = torch.zeros_like(d)
+        else:
+            low = torch.quantile(valid_pixels, 0.02)
+            high = torch.quantile(valid_pixels, 0.98)
+            d_clipped = torch.clamp(d, low, high)
+            d_norm = (d_clipped - low) / (high - low + 1e-6)
+            d_norm = 1.0 - d_norm  # invert to match GT depth convention (close=0, far=1)
 
         # Resize if requested (e.g. depth padded to 2000×2000)
-        if target_size is not None and d.shape[-2:] != target_size:
-            d = F.interpolate(d.unsqueeze(0), size=target_size,
+        if target_size is not None and d_norm.shape[-2:] != target_size:
+            d_norm = F.interpolate(d_norm.unsqueeze(0), size=target_size,
                               mode="bilinear", align_corners=False)[0]
 
-        return d.float()       # Save VRAM
+        return d_norm.float()       # Save VRAM
 
 
     def __len__(self):
@@ -136,6 +145,19 @@ class MegaDepthDataset(Dataset):
             )
         else:
             depth0 = depth1 = torch.tensor([])
+
+        # read depth anything v2 depth map. shape: (h, w)
+        if self.mode in ["train", "val", "test"] and self.depth_map_fusion:
+            depth0_da = read_megadepth_depth_fusion(
+                osp.join(self.root_dir, self.scene_info["image_paths"][idx0]),
+                pad_to=self.depth_max_size,
+            )
+            depth1_da = read_megadepth_depth_fusion(
+                osp.join(self.root_dir, self.scene_info["image_paths"][idx1]),
+                pad_to=self.depth_max_size,
+            )
+        else:
+            depth0_da = depth1_da = torch.tensor([])
 
         # read pre-extracted depth features: 1, 1369, 384 (fixed from DepthAnything-v2-small)
         if self.mode in ["train", "val", "test"] and self.pre_extracted_depth:
@@ -195,8 +217,8 @@ class MegaDepthDataset(Dataset):
         if self.depth_map_fusion:
             target_size = image0.shape[-2:]  # (H, W) of the grayscale image
             data.update({
-                "depth0_norm": self._norm(depth0, target_size),
-                "depth1_norm": self._norm(depth1, target_size),
+                "depth0_norm": self._norm(depth0_da, target_size),
+                "depth1_norm": self._norm(depth1_da, target_size),
             })
             return data
         # If using pre-extracted depth features, add them to data

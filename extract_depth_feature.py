@@ -18,7 +18,7 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 # ------------------ model wrapper ------------------
 class DepthAnythingDepthEstimator(torch.nn.Module):
     """Return depth maps [B, H, W] resized to processor input size"""
-    def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
+    def __init__(self, model_name="depth-anything/Depth-Anything-V2-Large-hf"):
         super().__init__()
         if dist.get_rank() == 0:
             print(f"[INFO] Loading depth estimator: {model_name} …")
@@ -32,21 +32,28 @@ class DepthAnythingDepthEstimator(torch.nn.Module):
 
     @torch.no_grad()
     def forward(self, pil_imgs):                       # list[PIL.Image.Image]
-        # Prepare inputs
-        inputs = self.processor(images=pil_imgs, return_tensors="pt")
+        # Process each image independently to avoid inhomogeneous batching in the HF processor
         device = next(self.model.parameters()).device
-        pixel_values = inputs["pixel_values"].to(device)             # [B,3,H,W]
-        # Forward pass
-        outputs = self.model(pixel_values=pixel_values)
-        pred = outputs.predicted_depth                               # [B,h,w]
-        # Upsample to match input resolution
-        pred = torch.nn.functional.interpolate(
-            pred.unsqueeze(1),
-            size=pixel_values.shape[2:],
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze(1)                                                 # [B,H,W]
-        return pred
+        depth_list = []
+        for im in pil_imgs:
+            W, H = im.size  # original size (width, height)
+            # Run processor on a single image (no list) to avoid stacking
+            # process single image to avoid heterogeneous batch issues
+            inputs = self.processor(images=im, return_tensors="pt")
+            pixel_values = inputs["pixel_values"].to(device)       # [1,3,h,w]
+            outputs = self.model(pixel_values=pixel_values)
+            pred = outputs.predicted_depth                          # [1,1,h',w'] or [1,h',w']
+            if pred.ndim == 3:
+                pred = pred.unsqueeze(1)                            # [1,1,h',w']
+            # Resize prediction to original image resolution
+            depth_resized = torch.nn.functional.interpolate(
+                pred,
+                size=(H, W),
+                mode="bicubic",
+                align_corners=False,
+            )[0, 0].contiguous()                                    # [H,W]
+            depth_list.append(depth_resized)
+        return depth_list
 
 
 # ------------------ io utils -----------------------
@@ -70,9 +77,10 @@ def worker(rank, world_size, args):
     extractor = DDP(extractor, device_ids=[rank])
 
     # Glob all image paths and split
+    valid_exts = [".jpg", ".jpeg", ".png"]  # adjust as needed
     all_imgs = sorted(
         p for p in Path(args.image_dir).rglob("*")
-        if p.suffix.lower() == ".jpg" and not p.with_suffix(".npy").exists()  # adjust suffix as needed
+        if p.suffix.lower() in valid_exts and not p.with_suffix(".h5").exists()  # adjust suffix as needed
     )
     print(f"[INFO] Found {len(all_imgs)} images to process.")
     shard = all_imgs[rank::world_size]     # round-robin
@@ -83,17 +91,16 @@ def worker(rank, world_size, args):
     for i in tqdm(range(0, len(shard), B), desc="Processing batches"):
         batch_paths = shard[i : i + B]
         # For MegaDepth training setup (matches default 832×832 in config)
-        pil_imgs = [Image.open(p).convert("RGB").resize((832, 832), Image.BILINEAR) for p in batch_paths]
-        # If using ScanNet, you may prefer (480, 640)
-        # pil_imgs = [Image.open(p).convert("RGB").resize((480, 640), Image.BILINEAR) for p in batch_paths]
-        depths   = extractor(pil_imgs)          # [B,H,W], float32
+        # Use original image resolution (no resizing)
+        pil_imgs = [Image.open(p).convert("RGB") for p in batch_paths]
+        depths   = extractor(pil_imgs)          # list of [H,W], float32
         for depth, pth in zip(depths, batch_paths):
             base = pth.with_suffix("")
             # Save as .npy for easy loading elsewhere; change to .pth/.h5 if preferred
-            npy_path = base.with_suffix(".npy")
-            pth_path = base.with_suffix(".pth")
+            # npy_path = base.with_suffix(".npy")
+            # pth_path = base.with_suffix(".pth")
             # Numpy
-            import numpy as _np
+            # import numpy as _np
             # _np.save(npy_path, depth.cpu().numpy())
             # Torch (optional)
             # save_pth(depth, pth_path)
