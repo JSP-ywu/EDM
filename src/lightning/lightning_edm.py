@@ -149,9 +149,9 @@ class PL_EDM(pl.LightningModule):
         ):
             # scalars
             for k, v in batch["loss_scalars"].items():
-                self.logger.experiment.add_scalar(
-                    f"train/{k}", v, self.global_step)
-
+                self.logger.experiment.log(
+                    {f"train/{k}": v}, step=self.global_step
+                )
             # figures
             if self.config.TRAINER.ENABLE_PLOTTING:
                 compute_symmetrical_epipolar_errors(
@@ -161,8 +161,8 @@ class PL_EDM(pl.LightningModule):
                     batch, self.config, self.config.TRAINER.PLOT_MODE
                 )
                 for k, v in figures.items():
-                    self.logger.experiment.add_figure(
-                        f"train_match/{k}", v, self.global_step
+                    self.logger.experiment.log(
+                        {f"train_match/{k}": v}, step=self.global_step
                     )
 
         out = {"loss": batch["loss"]}
@@ -254,28 +254,27 @@ class PL_EDM(pl.LightningModule):
                 for k in _figures[0]
             }
 
-            # tensorboard records only on rank 0
+            # wandb records only on rank 0
             if self.trainer.global_rank == 0:
                 for k, v in loss_scalars.items():
                     mean_v = torch.stack(v).mean()
-                    self.logger.experiment.add_scalar(
-                        f"val_{valset_idx}/avg_{k}", mean_v, global_step=cur_epoch
+                    self.logger.experiment.log(
+                        {f"val_{valset_idx}/avg_{k}": mean_v}, step=self.global_step
                     )
 
                 for k, v in val_metrics_4tb.items():
-                    self.logger.experiment.add_scalar(
-                        f"metrics_{valset_idx}/{k}", v, global_step=cur_epoch
+                    self.logger.experiment.log(
+                        {f"metrics_{valset_idx}/{k}": v}, step=self.global_step
                     )
 
                 for k, v in figures.items():
                     if self.trainer.global_rank == 0:
                         for plot_idx, fig in enumerate(v):
-                            self.logger.experiment.add_figure(
-                                f"val_match_{valset_idx}/{k}/pair-{plot_idx}",
-                                fig,
-                                cur_epoch,
-                                close=True,
+                            self.logger.experiment.log(
+                                {f"val_match_{valset_idx}/{k}/pair-{plot_idx}": fig},
+                                step=self.global_step,
                             )
+                            plt.close(fig)  # close the figure to free memory
             plt.close("all")
 
         for thr in [5, 10, 20]:
@@ -286,6 +285,7 @@ class PL_EDM(pl.LightningModule):
                 sync_dist=True,
             )  # ckpt monitors on this
         self.validation_step_outputs.clear()
+
 
     def test_step(self, batch, batch_idx):
         if self.config.EDM.HALF:
