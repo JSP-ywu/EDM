@@ -98,7 +98,25 @@ class CIM(nn.Module):
 
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
 
-    def forward(self, ms_feats, mask_c0=None, mask_c1=None):
+        # --- Optional hidden-state (e.g., Depth Anything v2) injection ---
+        self.hidden_use_train_only = config["fine"].get("use_hidden_train_only", True)
+        self.hidden_fuse = config["fine"].get("hidden_fuse", "film")  # 'film' or 'add'
+        self.hidden_weight = float(config["fine"].get("hidden_weight", 0.1))
+        
+        try:
+            LazyConv2d = nn.LazyConv2d
+        except AttributeError:
+            LazyConv2d = None
+        out_ch = self.block_dims[-1]
+        self.hid_proj = (nn.LazyConv2d(out_ch, kernel_size=1, bias=False)
+                         if LazyConv2d else nn.Conv2d(out_ch, out_ch, 1, bias=False))
+        self.hid_gamma = (nn.LazyConv2d(out_ch, kernel_size=1, bias=True)
+                          if LazyConv2d else nn.Conv2d(out_ch, out_ch, 1, bias=True))
+        self.hid_beta  = (nn.LazyConv2d(out_ch, kernel_size=1, bias=True)
+                          if LazyConv2d else nn.Conv2d(out_ch, out_ch, 1, bias=True))
+
+    def forward(self, ms_feats, mask_c0=None, mask_c1=None,
+                hidden0=None, hidden1=None, inject_hidden=False):
         if len(ms_feats) == 3:  # same image shape
             f8, f16, f32 = ms_feats
             f32 = self.fc32(f32)

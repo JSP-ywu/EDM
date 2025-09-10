@@ -44,6 +44,10 @@ _CN.EDM.FINE.COORD_LENGTH = 16
 _CN.EDM.FINE.BI_DIRECTIONAL_REFINE = True
 _CN.EDM.FINE.SIGMA_THR = 0.0
 _CN.EDM.FINE.SIGMA_SELECTION = True
+# Comment out below 3 lines if not used. Default value exists.
+_CN.EDM.FINE.USE_HIDDEN_TRAIN_ONLY = True
+_CN.EDM.FINE.HIDDEN_FUSE = "film"  # 'film' or 'add'
+_CN.EDM.FINE.HIDDEN_WEIGHT = 0.1
 
 # 5. EDM Losses
 # -- # coarse-level
@@ -63,6 +67,11 @@ _CN.EDM.LOSS.NEG_WEIGHT = 1.0
 _CN.EDM.LOSS.FINE_TYPE = "rle"
 _CN.EDM.LOSS.FINE_WEIGHT = 0.2
 _CN.EDM.LOSS.Q_DISTRIBUTION = "laplace"  # options: ['laplace', 'gaussian']
+
+# -- # epiolar loss-only setting
+# Comment out below 2 lines if not used. Default value exists.
+_CN.EDM.LOSS.EPI_WEIGHT = 0.2
+_CN.EDM.LOSS.EPI_TAU = 1.0
 
 
 ##############  Dataset  ##############

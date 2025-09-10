@@ -5,6 +5,42 @@ import torch.nn as nn
 import math
 import torch.nn.functional as F
 
+# === Epipolar utilities (loss-only) ===
+def _skew(x: torch.Tensor) -> torch.Tensor:
+    """
+    x: [3] -> [3,3] skew-symmetric matrix
+    """
+    return x.new_tensor([[0, -x[2], x[1]],
+                         [x[2], 0, -x[0]],
+                         [-x[1], x[0], 0]])
+
+@torch.no_grad()
+def _compute_f_from_rt_k(R: torch.Tensor, t: torch.Tensor,
+                         K0: torch.Tensor, K1: torch.Tensor) -> torch.Tensor:
+    """
+    **Assume all priors are given**
+    Compute fundamental matrix F = K1^{-T} [t]_x R K0^{-1}
+    R: [B,3,3], t: [B,3], K0,K1: [B,3,3] -> F: [B,3,3]
+    """
+    B = R.size(0)
+    E = torch.stack([_skew(t[b]) @ R[b] for b in range(B)], dim=0)  # [B,3,3]
+    K0inv = torch.inverse(K0)
+    K1invT = torch.inverse(K1).transpose(1, 2)
+    F = torch.einsum('bij,bjk,bkl->bil', K1invT, E, K0inv)
+    return F
+
+@torch.no_grad()
+def _sampson_distance_points(x0_xy: torch.Tensor, x1_xy: torch.Tensor,
+                             F_sel: torch.Tensor) -> torch.Tensor:
+    """x0_xy,x1_xy: [M,2], F_sel: [M,3,3] -> Sampson distance [M]"""
+    ones = x0_xy.new_ones(x0_xy.size(0), 1)
+    x0h = torch.cat([x0_xy, ones], dim=1)  # [M,3]
+    x1h = torch.cat([x1_xy, ones], dim=1)
+    Fx0 = torch.einsum('mij,mj->mi', F_sel, x0h)
+    Ftx1 = torch.einsum('mji,mj->mi', F_sel, x1h)
+    x1Fx0 = (x1h * Fx0).sum(dim=1).abs()
+    denom = Fx0[:, 0]**2 + Fx0[:, 1]**2 + Ftx1[:, 0]**2 + Ftx1[:, 1]**2 + 1e-9
+    return x1Fx0 / denom
 
 class EDMLoss(nn.Module):
     def __init__(self, config):
@@ -22,6 +58,10 @@ class EDMLoss(nn.Module):
         self.q_distribution = self.loss_config["q_distribution"]
         # self.fine_type = self.loss_config["fine_type"]
         # self.fine_loss = [nn.L1Loss(), nn.MSELoss(), nn.SmoothL1Loss()][1]
+
+        # Epipolar loss-only regularization
+        self.lambda_epi = float(self.loss_config.get("epi_weight", 0.0))
+        self.epi_tau = float(self.loss_config.get("epi_tau", 1.0))
 
     def compute_coarse_loss(self, conf, conf_gt, weight=None):
         """Point-wise CE / Focal Loss with 0 / 1 confidence as gt.
@@ -164,6 +204,23 @@ class EDMLoss(nn.Module):
         else:
             c_weight = None
         return c_weight
+    
+    def compute_epi_loss(self, data):
+        """Compute epipolar loss from selected fine matches. Returns None if unavailable."""
+        if self.lambda_epi <= 0:
+            return None
+        # need fine-level selected matches
+        if ("mkpts0_f" not in data) or (data["mkpts0_f"].numel() == 0):
+            return None
+        mk0 = data["mkpts0_f"]; mk1 = data["mkpts1_f"]; b_ids = data["m_bids"]
+        R = data["T_0to1"][:, :3, :3]; t = data["T_0to1"][:, :3, 3]
+        K0 = data["K0"]; K1 = data["K1"]
+        F_all = _compute_f_from_rt_k(R, t, K0, K1)  # [B,3,3]
+        F_sel = F_all[b_ids]  # [M,3,3]
+        d = _sampson_distance_points(mk0, mk1, F_sel)  # [M]
+        # smooth penalty with temperature
+        return (d / self.epi_tau).softplus().mean()
+
 
     def forward(self, data):
         """
@@ -201,6 +258,14 @@ class EDMLoss(nn.Module):
             assert self.training is False
             # 1 is the upper bound
             loss_scalars.update({"loss_f": torch.tensor(1.0)})
+            
+        # 3. epipolar loss-only regularization (does not change forward graph)
+        loss_epi_val = None
+        if self.lambda_epi > 0:
+            loss_epi_val = self.compute_epi_loss(data)
+            if loss_epi_val is not None:
+                loss = loss + self.lambda_epi * loss_epi_val
+                loss_scalars.update({"loss_epi": loss_epi_val.clone().detach().cpu()})
 
         loss_scalars.update({"loss": loss.clone().detach().cpu()})
         data.update({"loss": loss, "loss_scalars": loss_scalars})
