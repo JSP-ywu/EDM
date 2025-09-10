@@ -71,8 +71,13 @@ class EDM(nn.Module):
             mask_c0, mask_c1 = data["mask0"], data["mask1"]
 
         # 2.  Feature Interaction & Multi-Scale Fusion
-        feat_c0, feat_c1 = self.neck(ms_feats, mask_c0, mask_c1)
-
+        # Optional train-time-only hidden-state injection (e.g., Depth Anything v2 hidden)
+        hidden0 = data.get("da_hidden0", None)
+        hidden1 = data.get("da_hidden1", None)
+        inject_hidden = bool(self.training and (hidden0 is not None) and (hidden1 is not None))
+        feat_c0, feat_c1 = self.neck(ms_feats, mask_c0, mask_c1,
+                                     hidden0=hidden0, hidden1=hidden1,
+                                     inject_hidden=inject_hidden)
         data.update(
             {
                 "hw0_c": feat_c0.shape[2:],

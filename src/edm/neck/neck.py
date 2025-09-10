@@ -102,7 +102,7 @@ class CIM(nn.Module):
         self.hidden_use_train_only = config["fine"].get("use_hidden_train_only", True)
         self.hidden_fuse = config["fine"].get("hidden_fuse", "film")  # 'film' or 'add'
         self.hidden_weight = float(config["fine"].get("hidden_weight", 0.1))
-        
+
         try:
             LazyConv2d = nn.LazyConv2d
         except AttributeError:
@@ -122,6 +122,23 @@ class CIM(nn.Module):
             f32 = self.fc32(f32)
 
             f32_0, f32_1 = f32.chunk(2, dim=0)
+
+            # --- Optional hidden-state injection (train-time only) ---
+            if inject_hidden and self.training and (not self.hidden_use_train_only or self.training):
+                if hidden0 is not None and hidden1 is not None:
+                    h0 = F.interpolate(hidden0.detach(), size=f32_0.shape[-2:], mode="bilinear", align_corners=False)
+                    h1 = F.interpolate(hidden1.detach(), size=f32_1.shape[-2:], mode="bilinear", align_corners=False)
+                    if self.hidden_fuse == "film":
+                        g0 = torch.tanh(self.hid_gamma(h0)) * self.hidden_weight
+                        b0 = torch.tanh(self.hid_beta(h0))  * self.hidden_weight
+                        g1 = torch.tanh(self.hid_gamma(h1)) * self.hidden_weight
+                        b1 = torch.tanh(self.hid_beta(h1))  * self.hidden_weight
+                        f32_0 = f32_0 * (1.0 + g0) + b0
+                        f32_1 = f32_1 * (1.0 + g1) + b1
+                    else:
+                        f32_0 = f32_0 + self.hidden_weight * self.hid_proj(h0)
+                        f32_1 = f32_1 + self.hidden_weight * self.hid_proj(h1)
+
             f32_0, f32_1 = self.loftr_32(f32_0, f32_1, mask_c0, mask_c1)
             f32 = torch.cat([f32_0, f32_1], dim=0)
 
@@ -142,6 +159,25 @@ class CIM(nn.Module):
             f8_0, f16_0, f32_0, f8_1, f16_1, f32_1 = ms_feats
             f32_0 = self.fc32(f32_0)
             f32_1 = self.fc32(f32_1)
+
+            if inject_hidden and self.training and (not self.hidden_use_train_only or self.training):
+                if hidden0 is not None:
+                    h0 = F.interpolate(hidden0.detach(), size=f32_0.shape[-2:], mode="bilinear", align_corners=False)
+                    if self.hidden_fuse == "film":
+                        g0 = torch.tanh(self.hid_gamma(h0)) * self.hidden_weight
+                        b0 = torch.tanh(self.hid_beta(h0))  * self.hidden_weight
+                        f32_0 = f32_0 * (1.0 + g0) + b0
+                    else:
+                        f32_0 = f32_0 + self.hidden_weight * self.hid_proj(h0)
+                if hidden1 is not None:
+                    h1 = F.interpolate(hidden1.detach(), size=f32_1.shape[-2:], mode="bilinear", align_corners=False)
+                    if self.hidden_fuse == "film":
+                        g1 = torch.tanh(self.hid_gamma(h1)) * self.hidden_weight
+                        b1 = torch.tanh(self.hid_beta(h1))  * self.hidden_weight
+                        f32_1 = f32_1 * (1.0 + g1) + b1
+                    else:
+                        f32_1 = f32_1 + self.hidden_weight * self.hid_proj(h1)
+
 
             f32_0, f32_1 = self.loftr_32(f32_0, f32_1, mask_c0, mask_c1)
 

@@ -7,6 +7,50 @@ from loguru import logger
 
 from src.utils.dataset import read_megadepth_gray, read_megadepth_depth
 
+ # ---- Optional hidden-state utils (train-time only injection) ----
+
+def _tokens_to_feature_map(hidden_seq: torch.Tensor, maybe_has_cls: bool = False) -> torch.Tensor:
+    """
+    Convert ViT-like hidden sequence
+    Input-hidden state  : [B, N, C]
+    Return-4D map       : [B, C, H, W]
+    If maybe_has_cls and N-1 is a perfect square, drop the first token.
+    """
+    assert hidden_seq.dim() == 3, f"Expected [B,N,C], got {hidden_seq.shape}"
+    B, N, C = hidden_seq.shape
+    tokens = hidden_seq
+    if maybe_has_cls and int((N - 1) ** 0.5) ** 2 == (N - 1):
+        tokens = hidden_seq[:, 1:, :]
+        N = N - 1
+    s = int(N ** 0.5)
+    assert s * s == N, f"Token count {N} is not a perfect square."
+    maps = tokens.view(B, s, s, C).permute(0, 3, 1, 2).contiguous()  # [B,C,s,s]
+    return maps
+
+
+def _hidden_sidecar_path(img_path: str, *, replace_ext: bool, suffix: str, ext: str) -> str:
+    """
+    Build sidecar path for hidden.
+    - If replace_ext=True: replace basename extension with `suffix` (e.g., .png -> .pth)
+    - Else: append `ext` to the original path (legacy behavior)
+    """
+    import os.path as osp
+    if replace_ext:
+        root, _ = osp.splitext(img_path)
+        return root + suffix
+    return img_path + ext
+
+
+def _load_hidden_sidecar(img_path: str, *, replace_ext: bool, suffix: str, ext: str) -> torch.Tensor | None:
+    """
+    Load sidecar tensor via torch.load using the constructed path.
+    """
+    sidecar = _hidden_sidecar_path(img_path, replace_ext=replace_ext, suffix=suffix, ext=ext)
+    try:
+        return torch.load(sidecar, map_location="cpu")
+    except Exception:
+        return None
+    
 
 class MegaDepthDataset(Dataset):
     def __init__(
@@ -21,6 +65,11 @@ class MegaDepthDataset(Dataset):
         depth_padding=False,
         augment_fn=None,
         fp16=False,
+        use_hidden=False,
+        hidden_ext=".hidden.pt",            # legacy: appended
+        hidden_suffix=".pth",               # new: replace original image ext with this suffix
+        hidden_replace_ext=True,             # honor the user's rule by default
+        hidden_maybe_has_cls=False,
         **kwargs
     ):
         """
@@ -74,6 +123,12 @@ class MegaDepthDataset(Dataset):
         self.coarse_scale = getattr(kwargs, "coarse_scale", 0.125)
 
         self.fp16 = fp16
+        # optional train-time hidden prior
+        self.use_hidden = use_hidden
+        self.hidden_ext = hidden_ext
+        self.hidden_suffix = hidden_suffix
+        self.hidden_replace_ext = hidden_replace_ext
+        self.hidden_maybe_has_cls = hidden_maybe_has_cls
 
     def __len__(self):
         return len(self.pair_infos)
@@ -96,6 +151,41 @@ class MegaDepthDataset(Dataset):
             img_name1, self.img_resize, self.df, self.img_padding, None
         )
         # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
+
+        # --- Optional: load train-time hidden states (Depth Anything v2 etc.) ---
+        da_hidden0 = da_hidden1 = None
+        if self.mode == "train" and self.use_hidden:
+            # Support both legacy and new hidden sidecar naming
+            raw_h0 = _load_hidden_sidecar(
+                img_name0,
+                replace_ext=self.hidden_replace_ext,
+                suffix=self.hidden_suffix,
+                ext=self.hidden_ext,
+            )
+            raw_h1 = _load_hidden_sidecar(
+                img_name1,
+                replace_ext=self.hidden_replace_ext,
+                suffix=self.hidden_suffix,
+                ext=self.hidden_ext,
+            )
+            if isinstance(raw_h0, torch.Tensor) and isinstance(raw_h1, torch.Tensor):
+                # Accept either [B,N,C] or [C,H,W]; normalize to [B,C,H,W]
+                def _to_4d(x: torch.Tensor) -> torch.Tensor:
+                    if x.dim() == 3:  # [B,N,C]
+                        return _tokens_to_feature_map(x, maybe_has_cls=self.hidden_maybe_has_cls).float()
+                    elif x.dim() == 4:  # [B,C,H,W]
+                        return x.float()
+                    else:
+                        raise ValueError(f"Unsupported hidden shape: {tuple(x.shape)}")
+                try:
+                    da_hidden0 = _to_4d(raw_h0)
+                    da_hidden1 = _to_4d(raw_h1)
+                except Exception as e:
+                    logger.warning(f"Failed to format hidden maps: {e}")
+                    da_hidden0 = da_hidden1 = None
+            else:
+                # silently skip if sidecars not present
+                pass
 
         # read depth. shape: (h, w)
         if self.mode in ["train", "val"]:
@@ -150,6 +240,13 @@ class MegaDepthDataset(Dataset):
                 self.scene_info["image_paths"][idx1],
             ),
         }
+        # inject train-time hidden maps if available
+        if da_hidden0 is not None and da_hidden1 is not None:
+            if self.fp16:
+                da_hidden0 = da_hidden0.half()
+                da_hidden1 = da_hidden1.half()
+            data["da_hidden0"] = da_hidden0
+            data["da_hidden1"] = da_hidden1
         # for training
         if mask0 is not None:  # img_padding is True
             if self.coarse_scale:
