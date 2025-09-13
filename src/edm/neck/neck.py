@@ -40,6 +40,19 @@ class Conv2d_BN_Act(nn.Sequential):
         if drop != None:
             self.add_module("d", nn.Dropout(drop))
 
+class DeferredConv1x1(nn.Module):
+    def __init__(self, out_ch: int, bias: bool):
+        super().__init__()
+        self.out_ch = out_ch
+        self.bias = bias
+        self.conv = None
+    def forward(self, x):
+        if self.conv is None:
+            in_ch = x.shape[1]
+            conv = nn.Conv2d(in_ch, self.out_ch, kernel_size=1, bias=self.bias)
+            conv.to(dtype=x.dtype, device=x.device)
+            self.conv = conv
+        return self.conv(x)
 
 class CIM(nn.Module):
     """Feature Aggregation, Correlation Injection Module"""
@@ -103,17 +116,10 @@ class CIM(nn.Module):
         self.hidden_fuse = config["fine"].get("hidden_fuse", "film")  # 'film' or 'add'
         self.hidden_weight = float(config["fine"].get("hidden_weight", 0.1))
 
-        try:
-            LazyConv2d = nn.LazyConv2d
-        except AttributeError:
-            LazyConv2d = None
         out_ch = self.block_dims[-1]
-        self.hid_proj = (nn.LazyConv2d(out_ch, kernel_size=1, bias=False)
-                         if LazyConv2d else nn.Conv2d(out_ch, out_ch, 1, bias=False))
-        self.hid_gamma = (nn.LazyConv2d(out_ch, kernel_size=1, bias=True)
-                          if LazyConv2d else nn.Conv2d(out_ch, out_ch, 1, bias=True))
-        self.hid_beta  = (nn.LazyConv2d(out_ch, kernel_size=1, bias=True)
-                          if LazyConv2d else nn.Conv2d(out_ch, out_ch, 1, bias=True))
+        self.hid_proj = DeferredConv1x1(out_ch, bias=False)
+        self.hid_gamma = DeferredConv1x1(out_ch, bias=True)
+        self.hid_beta  = DeferredConv1x1(out_ch, bias=True)
 
     def forward(self, ms_feats, mask_c0=None, mask_c1=None,
                 hidden0=None, hidden1=None, inject_hidden=False):
@@ -124,7 +130,7 @@ class CIM(nn.Module):
             f32_0, f32_1 = f32.chunk(2, dim=0)
 
             # --- Optional hidden-state injection (train-time only) ---
-            if inject_hidden and self.training and (not self.hidden_use_train_only or self.training):
+            if inject_hidden:
                 if hidden0 is not None and hidden1 is not None:
                     h0 = F.interpolate(hidden0.detach(), size=f32_0.shape[-2:], mode="bilinear", align_corners=False)
                     h1 = F.interpolate(hidden1.detach(), size=f32_1.shape[-2:], mode="bilinear", align_corners=False)
@@ -160,7 +166,7 @@ class CIM(nn.Module):
             f32_0 = self.fc32(f32_0)
             f32_1 = self.fc32(f32_1)
 
-            if inject_hidden and self.training and (not self.hidden_use_train_only or self.training):
+            if inject_hidden:
                 if hidden0 is not None:
                     h0 = F.interpolate(hidden0.detach(), size=f32_0.shape[-2:], mode="bilinear", align_corners=False)
                     if self.hidden_fuse == "film":

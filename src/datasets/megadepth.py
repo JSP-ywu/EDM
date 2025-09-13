@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from loguru import logger
+from typing import Optional
 
 from src.utils.dataset import read_megadepth_gray, read_megadepth_depth
 
@@ -41,7 +42,7 @@ def _hidden_sidecar_path(img_path: str, *, replace_ext: bool, suffix: str, ext: 
     return img_path + ext
 
 
-def _load_hidden_sidecar(img_path: str, *, replace_ext: bool, suffix: str, ext: str) -> torch.Tensor | None:
+def _load_hidden_sidecar(img_path: str, *, replace_ext: bool, suffix: str, ext: str) -> Optional[torch.Tensor]:
     """
     Load sidecar tensor via torch.load using the constructed path.
     """

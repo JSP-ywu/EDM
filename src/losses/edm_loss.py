@@ -206,20 +206,38 @@ class EDMLoss(nn.Module):
         return c_weight
     
     def compute_epi_loss(self, data):
-        """Compute epipolar loss from selected fine matches. Returns None if unavailable."""
         if self.lambda_epi <= 0:
             return None
-        # need fine-level selected matches
         if ("mkpts0_f" not in data) or (data["mkpts0_f"].numel() == 0):
             return None
-        mk0 = data["mkpts0_f"]; mk1 = data["mkpts1_f"]; b_ids = data["m_bids"]
+
+        mk0, mk1, b_ids = data["mkpts0_f"], data["mkpts1_f"], data["m_bids"]
         R = data["T_0to1"][:, :3, :3]; t = data["T_0to1"][:, :3, 3]
-        K0 = data["K0"]; K1 = data["K1"]
-        F_all = _compute_f_from_rt_k(R, t, K0, K1)  # [B,3,3]
-        F_sel = F_all[b_ids]  # [M,3,3]
-        d = _sampson_distance_points(mk0, mk1, F_sel)  # [M]
-        # smooth penalty with temperature
-        return (d / self.epi_tau).softplus().mean()
+        K0, K1 = data["K0"], data["K1"]
+
+        F_all = _compute_f_from_rt_k(R, t, K0, K1)   # [B,3,3]
+        F_sel = F_all[b_ids]                          # [M,3,3]
+        d = _sampson_distance_points(mk0, mk1, F_sel) # [M], in pixels
+
+        # --- Robust weighting by confidence (if present) ---
+        w = data.get("mconf", None)
+        if w is not None:
+            w = w.clamp_min(1e-3)  # avoid zero
+        else:
+            w = torch.ones_like(d)
+
+        # --- Robust scale normalization (median) ---
+        s = d.detach().median()
+        s = torch.clamp(s, min=1e-3)
+        d_norm = d / s
+
+        # --- Robust penalty: log1p vs softplus ---
+        # loss_per = torch.log1p(d_norm / self.epi_tau)
+        loss_per = F.softplus(d_norm / self.epi_tau)
+
+        # Weighted mean
+        loss = (w * loss_per).sum() / (w.sum() + 1e-9)
+        return loss
 
 
     def forward(self, data):
