@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 from loguru import logger
 from typing import Optional
 
-from src.utils.dataset import read_megadepth_gray, read_megadepth_depth
+from src.utils.dataset import read_megadepth_gray, read_megadepth_rgb, read_megadepth_depth
 
  # ---- Optional hidden-state utils (train-time only injection) ----
 
@@ -67,6 +67,7 @@ class MegaDepthDataset(Dataset):
         augment_fn=None,
         fp16=False,
         use_hidden=False,
+        depth_from_extract=False,
         hidden_ext=".hidden.pt",            # legacy: appended
         hidden_suffix=".pth",               # new: replace original image ext with this suffix
         hidden_replace_ext=True,             # honor the user's rule by default
@@ -126,6 +127,7 @@ class MegaDepthDataset(Dataset):
         self.fp16 = fp16
         # optional train-time hidden prior
         self.use_hidden = use_hidden
+        self.depth_from_extract = depth_from_extract
         self.hidden_ext = hidden_ext
         self.hidden_suffix = hidden_suffix
         self.hidden_replace_ext = hidden_replace_ext
@@ -151,11 +153,18 @@ class MegaDepthDataset(Dataset):
         image1, mask1, scale1 = read_megadepth_gray(
             img_name1, self.img_resize, self.df, self.img_padding, None
         )
+        image0_rgb=image1_rgb=None
         # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
-
+        if self.use_hidden and self.depth_from_extract:
+            image0_rgb, _, _ = read_megadepth_rgb(
+                img_name0, self.img_resize, self.df, self.img_padding, None
+            )
+            image1_rgb, _, _ = read_megadepth_rgb(
+                img_name1, self.img_resize, self.df, self.img_padding, None
+            )       
         # --- Optional: load train-time hidden states (Depth Anything v2 etc.) ---
         da_hidden0 = da_hidden1 = None
-        if self.mode == "train" and self.use_hidden:
+        if self.mode == "train" and self.use_hidden and not self.depth_from_extract:
             # Support both legacy and new hidden sidecar naming
             raw_h0 = _load_hidden_sidecar(
                 img_name0,
@@ -172,10 +181,23 @@ class MegaDepthDataset(Dataset):
             if isinstance(raw_h0, torch.Tensor) and isinstance(raw_h1, torch.Tensor):
                 # Accept either [B,N,C] or [C,H,W]; normalize to [B,C,H,W]
                 def _to_4d(x: torch.Tensor) -> torch.Tensor:
-                    if x.dim() == 3:  # [B,N,C]
-                        return _tokens_to_feature_map(x, maybe_has_cls=self.hidden_maybe_has_cls).float()
-                    elif x.dim() == 4:  # [B,C,H,W]
+                    """
+                    Normalize to [B,C,H,W]. Accepts:
+                    - [B,N,C]  (tokens) → [B,C,s,s]
+                    - [C,H,W]  (map)    → [1,C,H,W]
+                    - [B,C,H,W]         → [B,C,H,W]
+                    """
+                    if x.dim() == 4:  # [B,C,H,W]
                         return x.float()
+                    elif x.dim() == 3:
+                        # Heuristic: decide between [B,N,C] tokens vs [C,H,W] map
+                        B, N, C = x.shape
+                        # Drop CLS if requested and check perfect square
+                        N_eff = N - 1 if self.hidden_maybe_has_cls else N
+                        if int(N_eff ** 0.5) ** 2 == N_eff:
+                            return _tokens_to_feature_map(x, maybe_has_cls=self.hidden_maybe_has_cls).float()
+                        # Otherwise assume [C,H,W]
+                        return x.unsqueeze(0).float()
                     else:
                         raise ValueError(f"Unsupported hidden shape: {tuple(x.shape)}")
                 try:
@@ -242,6 +264,10 @@ class MegaDepthDataset(Dataset):
             ),
         }
         # inject train-time hidden maps if available
+        if self.depth_from_extract and self.use_hidden:
+            data["depth_feat_image0"] = image0_rgb
+            data["depth_feat_image"] = image1_rgb
+
         if da_hidden0 is not None and da_hidden1 is not None:
             if self.fp16:
                 da_hidden0 = da_hidden0.half()

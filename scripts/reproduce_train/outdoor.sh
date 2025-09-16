@@ -26,7 +26,6 @@ python -u ./train.py \
     --exp_name=${exp_name} \
     --gpus=${n_gpus_per_node} \
     --num_nodes=${n_nodes} \
-    --accelerator="ddp" \
     --batch_size=${batch_size} \
     --num_workers=${torch_num_workers} \
     --pin_memory=${pin_memory} \

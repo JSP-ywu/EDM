@@ -59,6 +59,10 @@ class MultiSceneDataModule(pl.LightningDataModule):
         self.test_list_path = config.DATASET.TEST_LIST_PATH
         self.test_intrinsic_path = config.DATASET.TEST_INTRINSIC_PATH
 
+        # Depth hidden state
+        self.use_hidden = config.EDM.USE_HIDDEN
+        self.depth_from_extract = config.EDM.DEPTH_FROM_EXTRACT
+
         # 2. dataset config
         # general options
         self.min_overlap_score_test = (
@@ -310,6 +314,8 @@ class MultiSceneDataModule(pl.LightningDataModule):
                         augment_fn=augment_fn,
                         coarse_scale=self.coarse_scale,
                         fp16=self.fp16,
+                        use_hidden=self.use_hidden,
+                        depth_from_extract=self.depth_from_extract
                     )
                 )
             else:

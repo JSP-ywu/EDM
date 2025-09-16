@@ -45,7 +45,7 @@ _CN.EDM.FINE.BI_DIRECTIONAL_REFINE = True
 _CN.EDM.FINE.SIGMA_THR = 0.0
 _CN.EDM.FINE.SIGMA_SELECTION = True
 # Comment out below 3 lines if not used. Default value exists.
-_CN.EDM.FINE.USE_HIDDEN_TRAIN_ONLY = True
+# _CN.EDM.FINE.USE_HIDDEN_TRAIN_ONLY = True
 _CN.EDM.FINE.HIDDEN_FUSE = "film"  # 'film' or 'add'
 _CN.EDM.FINE.HIDDEN_WEIGHT = 0.1
 
@@ -73,6 +73,9 @@ _CN.EDM.LOSS.Q_DISTRIBUTION = "laplace"  # options: ['laplace', 'gaussian']
 _CN.EDM.LOSS.EPI_WEIGHT = 0.2
 _CN.EDM.LOSS.EPI_TAU = 1.0
 
+# Hidden state and Depth control
+_CN.EDM.USE_HIDDEN=True
+_CN.EDM.DEPTH_FROM_EXTRACT=True
 
 ##############  Dataset  ##############
 _CN.DATASET = CN()
@@ -113,7 +116,6 @@ _CN.DATASET.AUGMENTATION_TYPE = None  # options: [None, 'dark', 'mobile']
 _CN.DATASET.MGDPT_IMG_PAD = True  # pad img to square with size = MGDPT_IMG_RESIZE
 _CN.DATASET.MGDPT_DEPTH_PAD = True  # pad depthmap to square with size = 2000
 _CN.DATASET.MGDPT_DF = 8
-
 
 ##############  Trainer  ##############
 _CN.TRAINER = CN()

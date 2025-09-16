@@ -30,7 +30,6 @@ def parse_args():
     parser.add_argument("--exp_name", type=str, default="default_exp_name")
     parser.add_argument("--gpus", default=1)
     parser.add_argument("--num_nodes", type=int, default=1)
-    parser.add_argument("--accelerator", type=str, default="ddp")
     parser.add_argument("--batch_size", type=int,
                         default=4, help="batch_size per gpu")
     parser.add_argument("--num_workers", type=int, default=4)
@@ -151,12 +150,14 @@ def main():
     callbacks = [lr_monitor]
     if not args.disable_ckpt:
         callbacks.append(ckpt_callback)
-
+    
+    from lightning.pytorch.plugins.environments import LightningEnvironment
     # Lightning Trainer
     trainer = pl.Trainer(
         accelerator="gpu",
         devices=args.gpus,
-        strategy="ddp",
+        strategy=DDPStrategy(process_group_backend="nccl"),
+        pluginds=[LightningEnvironment()],
         num_nodes=args.num_nodes,
         max_epochs=args.max_epochs,
         log_every_n_steps=args.log_every_n_steps,

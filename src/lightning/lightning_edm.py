@@ -377,3 +377,15 @@ class PL_EDM(pl.LightningModule):
                 np.save(Path(self.dump_dir) / "EDM_pred_eval", dumps)
 
         self.test_step_outputs.clear()
+    def on_fit_start(self):
+        # 분산 토폴로지 로깅 + config 동기화
+        try:
+            ws = getattr(self.trainer, "world_size", None)
+            nd = getattr(self.trainer, "num_nodes", None)
+            ndv = getattr(self.trainer, "num_devices", None)
+            print(f"[on_fit_start] world_size={ws}, num_devices={ndv}, num_nodes={nd}, "
+                f"global_rank={self.global_rank}, local_rank={self.local_rank}")
+            if ws is not None:
+                self.config.TRAINER.WORLD_SIZE = int(ws)
+        except Exception:
+            pass

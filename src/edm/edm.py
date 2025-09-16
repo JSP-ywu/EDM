@@ -1,7 +1,7 @@
 from ..utils.misc import detect_NaN
 from .head.fine_matching import FineMatching
 from .head.coarse_matching import CoarseMatching
-from .neck.neck import CIM
+from .neck.neck import CIM, DepthAnythingFeatureExtractor
 from .backbone.resnet import ResNet18
 from einops.einops import rearrange
 import torch.nn.functional as F
@@ -23,6 +23,8 @@ class EDM(nn.Module):
         # Modules
         self.backbone = ResNet18(config)
         self.neck = CIM(config)
+        if config['depth_from_extract'] and config['use_hidden']:
+            self.depth_extractor = DepthAnythingFeatureExtractor()
         self.coarse_matching = CoarseMatching(config)
         self.fine_matching = FineMatching(config)
 
@@ -54,6 +56,13 @@ class EDM(nn.Module):
             feats = self.backbone(
                 torch.cat([data["image0"], data["image1"]], dim=0))
             f8, f16, f32, f8_fine = feats
+            if not self.config["use_hidden"] and self.config["depth_from_extract"]:
+                with torch.no_grad():
+                    # print('[DEBUG] Extracting depth features...')
+                    depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],
+                                                                    data["depth_feat_image1"])
+                    data["depth_feat0"] = depth_feat0
+                    data["depth_feat1"] = depth_feat1
             ms_feats = f8, f16, f32
             feat_f0, feat_f1 = f8_fine.chunk(2)
         else:
@@ -72,12 +81,18 @@ class EDM(nn.Module):
 
         # 2.  Feature Interaction & Multi-Scale Fusion
         # Optional train-time-only hidden-state injection (e.g., Depth Anything v2 hidden)
-        hidden0 = data.get("da_hidden0", None)
-        hidden1 = data.get("da_hidden1", None)
-        inject_hidden = bool(self.training and (hidden0 is not None) and (hidden1 is not None))
+        if self.config['use_hidden']:
+            if self.config['depth_from_extract']:
+                hidden0 = data.get("depth_feat0", None)
+                hidden1 = data.get("depth_feat1", None)
+            else:
+                hidden0 = data.get("da_hidden0", None)
+                hidden1 = data.get("da_hidden1", None)
+        else:
+            hidden0=hidden1=None
         feat_c0, feat_c1 = self.neck(ms_feats, mask_c0, mask_c1,
                                      hidden0=hidden0, hidden1=hidden1,
-                                     inject_hidden=inject_hidden)
+                                     inject_hidden=self.config['use_hidden'])
         data.update(
             {
                 "hw0_c": feat_c0.shape[2:],

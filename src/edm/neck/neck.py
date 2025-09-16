@@ -112,7 +112,7 @@ class CIM(nn.Module):
         self.loftr_32 = LocalFeatureTransformer(config["neck"])
 
         # --- Optional hidden-state (e.g., Depth Anything v2) injection ---
-        self.hidden_use_train_only = config["fine"].get("use_hidden_train_only", True)
+        # self.hidden_use_train_only = config["fine"].get("use_hidden_train_only", True)
         self.hidden_fuse = config["fine"].get("hidden_fuse", "film")  # 'film' or 'add'
         self.hidden_weight = float(config["fine"].get("hidden_weight", 0.1))
 
@@ -214,3 +214,41 @@ class CIM(nn.Module):
             feat_c1 = f8
 
         return feat_c0, feat_c1
+
+class DepthAnythingFeatureExtractor(nn.Module):
+    """Wraps DepthAnythingV2 to extract the final feature map (not depth map)."""
+
+    def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
+        super().__init__()
+        from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+
+        self.processor = AutoImageProcessor.from_pretrained(model_name,
+                                                            trust_remote_code=True)
+        self.model = AutoModelForDepthEstimation.from_pretrained(model_name,
+                                                                 trust_remote_code=True)
+        self.model.eval()  # important for inference stability
+
+    @torch.no_grad()
+    def forward(self, image0, image1):
+        """
+        image0, image1: torch.Tensor, shape [B, 3, H, W], values in [0, 1]
+        Returns: depth_feat0, depth_feat1: [B, C, H/4, W/4]
+        """
+        # HuggingFace expects images in [0, 255] and shape HWC
+        import torchvision.transforms.functional as TF
+        # print(f"[DEBUG] image0 shape: {image0.shape}, dtype: {image0.dtype}")
+        # print(f"[DEBUG] image1 shape: {image1.shape}, dtype: {image1.dtype}")
+        
+        # for i, img in enumerate(image0 + image1):
+        #     print(f"[DEBUG] Image {i} shape: {img.shape}, dtype: {img.dtype}")
+        #     if isinstance(img, torch.Tensor) and img.ndim != 3:
+        #         print(f"[WARNING] Bad shape: {img.shape} — skipping")
+        image0 = [TF.to_pil_image(img.cpu()) for img in image0]
+        image1 = [TF.to_pil_image(img.cpu()) for img in image1]
+        inputs = self.processor(images=image0 + image1, return_tensors="pt")
+        inputs = {k: v.to(next(self.model.parameters()).device) for k, v in inputs.items()}
+
+        outputs = self.model(**inputs, output_hidden_states=True)
+        B = len(image0)
+        
+        return outputs.hidden_states[-1][:B], outputs.hidden_states[-1][B:]
