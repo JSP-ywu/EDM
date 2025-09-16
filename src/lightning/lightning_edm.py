@@ -173,9 +173,23 @@ class PL_EDM(pl.LightningModule):
         return out
 
     def on_after_backward(self) -> None:
+        # (선택) Make parameter set which is registered to optimizer in real
+        opt_params = set()
+        for opt in self.trainer.optimizers:
+            for group in opt.param_groups:
+                opt_params.update(group["params"])
+
         for n, p in self.named_parameters():
+            # Pass frozen parameters
+            if not p.requires_grad:
+                continue
+            # Pass non-registered modules
+            if len(opt_params) and p not in opt_params:
+                continue
+            # When required gradient but not train
             if p.grad is None:
                 print(n)
+
         return super().on_after_backward()
 
     def on_train_epoch_end(self):
