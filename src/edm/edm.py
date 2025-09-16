@@ -25,6 +25,8 @@ class EDM(nn.Module):
         self.neck = CIM(config)
         if config['depth_from_extract'] and config['use_hidden']:
             self.depth_extractor = DepthAnythingFeatureExtractor()
+            self.depth_extractor.requires_grad_(False)
+            self.depth_extractor.eval()
         self.coarse_matching = CoarseMatching(config)
         self.fine_matching = FineMatching(config)
 

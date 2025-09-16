@@ -157,7 +157,7 @@ def main():
         accelerator="gpu",
         devices=args.gpus,
         strategy=DDPStrategy(process_group_backend="nccl"),
-        pluginds=[LightningEnvironment()],
+        plugins=[LightningEnvironment()],
         num_nodes=args.num_nodes,
         max_epochs=args.max_epochs,
         log_every_n_steps=args.log_every_n_steps,

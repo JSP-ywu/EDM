@@ -266,7 +266,7 @@ class MegaDepthDataset(Dataset):
         # inject train-time hidden maps if available
         if self.depth_from_extract and self.use_hidden:
             data["depth_feat_image0"] = image0_rgb
-            data["depth_feat_image"] = image1_rgb
+            data["depth_feat_image1"] = image1_rgb
 
         if da_hidden0 is not None and da_hidden1 is not None:
             if self.fp16:
