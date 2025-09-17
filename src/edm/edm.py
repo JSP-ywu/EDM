@@ -58,7 +58,7 @@ class EDM(nn.Module):
             feats = self.backbone(
                 torch.cat([data["image0"], data["image1"]], dim=0))
             f8, f16, f32, f8_fine = feats
-            if not self.config["use_hidden"] and self.config["depth_from_extract"]:
+            if self.config["use_hidden"] and self.config["depth_from_extract"]:
                 with torch.no_grad():
                     # print('[DEBUG] Extracting depth features...')
                     depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],

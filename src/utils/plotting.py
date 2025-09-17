@@ -145,7 +145,7 @@ def make_matching_figures(data, config, mode="evaluation"):
     Returns:
         figures (Dict[str, List[plt.figure]]
     """
-    assert mode in ["evaluation", "confidence", "gt"]  # 'confidence'
+    assert mode in ["evaluation", "confidence", "failure","gt"]  # 'confidence'
     figures = {mode: []}
     for b_id in range(data["image0"].size(0)):
         if mode == "evaluation":

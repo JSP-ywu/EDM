@@ -29,7 +29,6 @@ def _compute_f_from_rt_k(R: torch.Tensor, t: torch.Tensor,
     F = torch.einsum('bij,bjk,bkl->bil', K1invT, E, K0inv)
     return F
 
-@torch.no_grad()
 def _sampson_distance_points(x0_xy: torch.Tensor, x1_xy: torch.Tensor,
                              F_sel: torch.Tensor) -> torch.Tensor:
     """x0_xy,x1_xy: [M,2], F_sel: [M,3,3] -> Sampson distance [M]"""
@@ -60,6 +59,7 @@ class EDMLoss(nn.Module):
         # self.fine_loss = [nn.L1Loss(), nn.MSELoss(), nn.SmoothL1Loss()][1]
 
         # Epipolar loss-only regularization
+        self.bi_directional_refine = self.config['edm']['fine']['bi_directional_refine']
         self.lambda_epi = float(self.loss_config.get("epi_weight", 0.0))
         self.epi_tau = float(self.loss_config.get("epi_tau", 1.0))
 
@@ -208,31 +208,81 @@ class EDMLoss(nn.Module):
     def compute_epi_loss(self, data):
         if self.lambda_epi <= 0:
             return None
-        if ("mkpts0_f" not in data) or (data["mkpts0_f"].numel() == 0):
+        # Need coarse selections and fine offsets to define correspondences
+        if ("i_ids" not in data) or (data["i_ids"].numel() == 0):
             return None
 
-        mk0, mk1, b_ids = data["mkpts0_f"], data["mkpts1_f"], data["m_bids"]
-        R = data["T_0to1"][:, :3, :3]; t = data["T_0to1"][:, :3, 3]
+        # --- Build differentiable matched points from fine head outputs ---
+        # Base (coarse-cell centers) in image coords
+        mkpts0_c = data.get("mkpts0_c", None)
+        mkpts1_c = data.get("mkpts1_c", None)
+        if mkpts0_c is None or mkpts1_c is None:
+            return None
+
+        # Predicted local offsets in [-0.5, 0.5], shape [M,2] or [2M,2] if bi-directional
+        pred_coord = data.get("pred_coord", None)
+        if pred_coord is None or pred_coord.numel() == 0:
+            return None
+
+        b_ids = data["b_ids"]               # [M]
+        R = data["T_0to1"][:, :3, :3]
+        t = data["T_0to1"][:, :3, 3]
         K0, K1 = data["K0"], data["K1"]
 
-        F_all = _compute_f_from_rt_k(R, t, K0, K1)   # [B,3,3]
-        F_sel = F_all[b_ids]                          # [M,3,3]
-        d = _sampson_distance_points(mk0, mk1, F_sel) # [M], in pixels
+        # Scale from local window units -> image pixels
+        local_res = float(self.config["edm"]["local_resolution"])  # window size in pixels
+        scale0 = data["scale0"][b_ids] if "scale0" in data else mkpts0_c.new_ones(mkpts0_c.shape[0], 2)
+        scale1 = data["scale1"][b_ids] if "scale1" in data else mkpts1_c.new_ones(mkpts1_c.shape[0], 2)
 
-        # --- Robust weighting by confidence (if present) ---
-        w = data.get("mconf", None)
+        M = mkpts0_c.shape[0]
+        P = pred_coord.shape[0]
+
+        if not self.bi_directional_refine:
+            # One-direction (0->1)
+            mk0 = mkpts0_c                          # [M,2], constant wrt params
+            mk1 = mkpts1_c + pred_coord * local_res * scale1  # [M,2], depends on pred_coord
+            m_bids = b_ids
+            w = data.get("mconf", None)
+        elif self.bi_directional_refine:
+            # Bi-directional (0->1 and 1->0). First M correspond to 0->1, last M to 1->0
+            pred01 = pred_coord[:M]
+            pred10 = pred_coord[M:]
+            mk0_a = mkpts0_c
+            mk1_a = mkpts1_c + pred01 * local_res * scale1
+            mk0_b = mkpts0_c + pred10 * local_res * scale0
+            mk1_b = mkpts1_c
+            mk0 = torch.cat([mk0_a, mk0_b], dim=0)
+            mk1 = torch.cat([mk1_a, mk1_b], dim=0)
+            m_bids = torch.cat([b_ids, b_ids], dim=0)
+            if "mconf" in data:
+                w = torch.cat([data["mconf"], data["mconf"]], dim=0)
+            else:
+                w = None
+        else:
+            # Unexpected shape; fall back to non-bidir assumption
+            mk0 = mkpts0_c
+            mk1 = mkpts1_c + pred_coord[:M] * local_res * scale1
+            m_bids = b_ids
+            w = data.get("mconf", None)
+
+        # --- Fundamental matrices per batch ---
+        F_all = _compute_f_from_rt_k(R, t, K0, K1)      # [B,3,3], no gradients
+        F_sel = F_all[m_bids]                           # [*,3,3]
+
+        # --- Sampson distance with gradients ---
+        d = _sampson_distance_points(mk0, mk1, F_sel)   # [*]
+
+        # Optional confidence weighting
         if w is not None:
-            w = w.clamp_min(1e-3)  # avoid zero
+            w = w.clamp_min(1e-3)
         else:
             w = torch.ones_like(d)
 
-        # --- Robust scale normalization (median) ---
-        s = d.detach().median()
-        s = torch.clamp(s, min=1e-3)
+        # Robust scale normalization
+        s = d.detach().median().clamp_min(1e-3)
         d_norm = d / s
 
-        # --- Robust penalty: log1p vs softplus ---
-        # loss_per = torch.log1p(d_norm / self.epi_tau)
+        # Robust penalty
         loss_per = F.softplus(d_norm / self.epi_tau)
 
         # Weighted mean
