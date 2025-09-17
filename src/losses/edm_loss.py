@@ -229,44 +229,63 @@ class EDMLoss(nn.Module):
         t = data["T_0to1"][:, :3, 3]
         K0, K1 = data["K0"], data["K1"]
 
-        # Scale from local window units -> image pixels
-        local_res = float(self.config["edm"]["local_resolution"])  # window size in pixels
-        scale0 = data["scale0"][b_ids] if "scale0" in data else mkpts0_c.new_ones(mkpts0_c.shape[0], 2)
-        scale1 = data["scale1"][b_ids] if "scale1" in data else mkpts1_c.new_ones(mkpts1_c.shape[0], 2)
-
+        # Scale from local window units -> image pixels (scalar)
+        # Prefer deriving from current batch if available; fallback to config
+        try:
+            lr0 = float(data["hw0_i"][0]) / float(data["hw0_c"][0])
+            lr1 = float(data["hw1_i"][0]) / float(data["hw1_c"][0])
+            local_res = (lr0 + lr1) * 0.5  # scalar
+        except Exception:
+            local_res = float(self.config["edm"]["local_resolution"])  # scalar
+        
+        # Shapes
         M = mkpts0_c.shape[0]
         P = pred_coord.shape[0]
-        print('mkpts0_c: ', mkpts0_c)
-        print('mkpts1_c: ', mkpts1_c)
-        print('scale0:', scale0)
-        print('scale1:', scale1)
+        # print('mkpts0_c: ', mkpts0_c)
+        # print('mkpts1_c: ', mkpts1_c)
+        # print('scale0:', scale0)
+        # print('scale1:', scale1)
+
+
+        # Use the original M-length indices for scales/weights (b_ids may be duplicated after final selection)
+        b_ids_all = b_ids
+        b_ids_M = b_ids_all[:M]
+        scale0_M = data["scale0"][b_ids_M] if "scale0" in data else mkpts0_c.new_ones(M, 2)
+        scale1_M = data["scale1"][b_ids_M] if "scale1" in data else mkpts1_c.new_ones(M, 2)
+
+        # Optional confidence of length M
+        w_all = data.get("mconf", None)
+        w_M = None
+        if w_all is not None and w_all.shape[0] >= M:
+            w_M = w_all[:M]
+
+
         if P == M:
             # One-direction (0->1)
             mk0 = mkpts0_c                          # [M,2]
-            mk1 = mkpts1_c + pred_coord * local_res * scale1  # [M,2]
-            m_bids = b_ids
-            w = data.get("mconf", None)
+            mk1 = mkpts1_c + pred_coord * local_res * scale1_M  # [M,2]
+            m_bids = b_ids_M
+            w = w_M
         elif P == 2 * M:
             # Bi-directional (0->1 and 1->0). First M correspond to 0->1, last M to 1->0
             pred01 = pred_coord[:M]
             pred10 = pred_coord[M:]
             mk0_a = mkpts0_c
-            mk1_a = mkpts1_c + pred01 * local_res * scale1
-            mk0_b = mkpts0_c + pred10 * local_res * scale0
+            # print('pred01: ', pred01)
+            # print('pred10: ', pred10)
+            mk1_a = mkpts1_c + pred01 * local_res * scale1_M
+            mk0_b = mkpts0_c + pred10 * local_res * scale0_M
             mk1_b = mkpts1_c
             mk0 = torch.cat([mk0_a, mk0_b], dim=0)
             mk1 = torch.cat([mk1_a, mk1_b], dim=0)
-            m_bids = torch.cat([b_ids, b_ids], dim=0)
-            if "mconf" in data:
-                w = torch.cat([data["mconf"], data["mconf"]], dim=0)
-            else:
-                w = None
+            m_bids = torch.cat([b_ids_M, b_ids_M], dim=0)
+            w = torch.cat([w_M, w_M], dim=0) if w_M is not None else None
         else:
             # Unexpected shape; fall back to one-direction using the first M rows
             mk0 = mkpts0_c
-            mk1 = mkpts1_c + pred_coord[:M] * local_res * scale1
-            m_bids = b_ids
-            w = data.get("mconf", None)
+            mk1 = mkpts1_c + pred_coord[:M] * local_res * scale1_M
+            m_bids = b_ids_M
+            w = w_M
 
         # --- Fundamental matrices per batch ---
         F_all = _compute_f_from_rt_k(R, t, K0, K1)      # [B,3,3], no gradients

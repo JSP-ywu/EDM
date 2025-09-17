@@ -254,9 +254,9 @@ class FineMatching(nn.Module):
         else:
             x_out = x.reshape(-1, self.coord_length + 2)
             y_out = y.reshape(-1, self.coord_length + 2)
-        print('bi_directional_refine: ', self.bi_directional_refine)
-        print('x_out dim: ', x_out)
-        print('y_out dim: ', y_out)
+        # print('bi_directional_refine: ', self.bi_directional_refine)
+        # print('x_out dim: ', x_out)
+        # print('y_out dim: ', y_out)
         x_cls = x_out[:, : self.coord_length + 1]
         coord_x = soft_argmax(x_cls) / self.coord_length - \
             0.5  # range [-0.5, +0.5]
