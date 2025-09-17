@@ -36,6 +36,8 @@ class PL_EDM(pl.LightningModule):
         # Misc
         self.config = config  # full config
         _config = lower_config(self.config)
+        print('Current epi loss weight: ', _config['edm']['loss']['epi_weight'])
+        print('Current epi loss tau: ', _config['edm']['loss']['epi_tau'])
 
         self.profiler = profiler or PassThroughProfiler()
         self.n_vals_plot = max(

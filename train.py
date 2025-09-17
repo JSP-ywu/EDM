@@ -77,6 +77,18 @@ def parse_args():
         default=False,
         help="Resume training from checkpoint (--ckpt_path)"
     )
+    parser.add_argument(
+        "--ew",
+        type=float,
+        default=0.2,
+        help="EPI_WEIGHT"
+    )
+    parser.add_argument(
+        "--et",
+        type=float,
+        default=1.0,
+        help="EPI_TAU"
+    )
 
     return parser.parse_args()
 
@@ -96,6 +108,10 @@ def main():
     # TODO: Use different seeds for each dataloader workers
     # This is needed for data augmentation
 
+    # Temporal argument for sbatch
+    config.EDM.Loss.EPI_WEIGHT = args.ew
+    config.EDM.LOSS.EPI_TAU = args.et
+
     # scale lr and warmup-step automatically
     args.gpus = _n_gpus = setup_gpus(args.gpus)
     config.TRAINER.WORLD_SIZE = _n_gpus * args.num_nodes
@@ -108,6 +124,8 @@ def main():
 
     # lightning module
     profiler = build_profiler(args.profiler_name)
+    print('Current epi loss weight: ', config['edm']['loss']['epi_weight'])
+    print('Current epi loss tau: ', config['edm']['loss']['epi_tau'])
     model = PL_EDM(config, pretrained_ckpt=args.ckpt_path, profiler=profiler)
     loguru_logger.info(f"EDM LightningModule initialized!")
 
@@ -121,7 +139,7 @@ def main():
     # )
         # Wandb Logger
     logger = WandbLogger(
-        project="edm-depth_fusion_pre_extracted",
+        project="edm_epiloss",
         name=args.exp_name,
         save_dir="logs/wandb_logs",
         log_model=False,
@@ -152,7 +170,6 @@ def main():
     callbacks = [lr_monitor]
     if not args.disable_ckpt:
         callbacks.append(ckpt_callback)
-    
     from lightning.pytorch.plugins.environments import LightningEnvironment
     # Lightning Trainer
     trainer = pl.Trainer(

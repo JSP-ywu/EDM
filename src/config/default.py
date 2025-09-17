@@ -74,8 +74,8 @@ _CN.EDM.LOSS.EPI_WEIGHT = 0.2
 _CN.EDM.LOSS.EPI_TAU = 1.0
 
 # Hidden state and Depth control
-_CN.EDM.USE_HIDDEN=True
-_CN.EDM.DEPTH_FROM_EXTRACT=True
+_CN.EDM.USE_HIDDEN=False
+_CN.EDM.DEPTH_FROM_EXTRACT=False
 
 ##############  Dataset  ##############
 _CN.DATASET = CN()
