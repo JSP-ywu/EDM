@@ -31,11 +31,13 @@ while [[ $# -gt 0 ]]; do
     --ew)   ew="$2"; shift 2 ;;
     --et=*) et="${1#*=}"; shift ;;
     --et)   et="$2"; shift 2 ;;
+    --exp_name=*) exp_name="${1#*=}"; shift ;;
+    --exp_name)   exp_name="$2"; shift 2 ;;
     *)      shift ;;  # ignore other args
   esac
 done
 
-echo "[outdoor.sh] ew=${ew:-(default)} et=${et:-(default)}"
+echo "[outdoor.sh] exp_name=${exp_name} ew=${ew:-(default)} et=${et:-(default)}"
 
 python -u ./train.py \
     ${data_cfg_path} \
@@ -54,6 +56,6 @@ python -u ./train.py \
     --benchmark=true \
     --max_epochs=30 \
     --split_data_idx=1 \
-    ${ew:+--ew=${ew}} \
-    ${et:+--et=${et}}
+    --ew=${ew} \
+    --et=${et}
 

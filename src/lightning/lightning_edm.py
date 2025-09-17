@@ -36,6 +36,7 @@ class PL_EDM(pl.LightningModule):
         # Misc
         self.config = config  # full config
         _config = lower_config(self.config)
+        # print(_config.keys())
         print('Current epi loss weight: ', _config['edm']['loss']['epi_weight'])
         print('Current epi loss tau: ', _config['edm']['loss']['epi_tau'])
 

@@ -109,7 +109,7 @@ def main():
     # This is needed for data augmentation
 
     # Temporal argument for sbatch
-    config.EDM.Loss.EPI_WEIGHT = args.ew
+    config.EDM.LOSS.EPI_WEIGHT = args.ew
     config.EDM.LOSS.EPI_TAU = args.et
 
     # scale lr and warmup-step automatically
@@ -124,8 +124,6 @@ def main():
 
     # lightning module
     profiler = build_profiler(args.profiler_name)
-    print('Current epi loss weight: ', config['edm']['loss']['epi_weight'])
-    print('Current epi loss tau: ', config['edm']['loss']['epi_tau'])
     model = PL_EDM(config, pretrained_ckpt=args.ckpt_path, profiler=profiler)
     loguru_logger.info(f"EDM LightningModule initialized!")
 

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .loftr_module.transformer import LocalFeatureTransformer
-
+from src.datasets.megadepth import _tokens_to_feature_map
 
 class Conv2d_BN_Act(nn.Sequential):
     def __init__(
@@ -250,5 +250,7 @@ class DepthAnythingFeatureExtractor(nn.Module):
 
         outputs = self.model(**inputs, output_hidden_states=True)
         B = len(image0)
-        
-        return outputs.hidden_states[-1][:B], outputs.hidden_states[-1][B:]
+        hidden = outputs.hidden_states[-1]   # [2B, N, C]
+        feat0 = _tokens_to_feature_map(hidden[:B], maybe_has_cls=True)  # [B, C, H, W]
+        feat1 = _tokens_to_feature_map(hidden[B:], maybe_has_cls=True)  # [B, C, H, W]
+        return feat0, feat1
