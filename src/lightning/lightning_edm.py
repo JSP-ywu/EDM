@@ -24,6 +24,7 @@ from src.utils.plotting import make_matching_figures
 from src.utils.comm import gather, all_gather
 from src.utils.misc import lower_config, flattenList
 from src.utils.profiler import PassThroughProfiler
+from src.edm.neck.neck import DepthAnythingFeatureExtractor
 
 
 class PL_EDM(pl.LightningModule):
@@ -48,6 +49,18 @@ class PL_EDM(pl.LightningModule):
         # Matcher: EDM
         self.matcher = EDM(config=_config["edm"])
         self.loss = EDMLoss(_config)
+
+        # Optional depth feature extractor outside checkpoint
+        use_hidden = _config["edm"].get("use_hidden", False)
+        use_extract = _config["edm"].get("depth_from_extract", False)
+        if use_hidden and use_extract:
+            extractor = DepthAnythingFeatureExtractor()
+            extractor.requires_grad_(False)
+            extractor.eval()
+            # 중요: __setattr__ 우회하여 등록/체크포인트 제외
+            self.__dict__["_depth_extractor"] = extractor
+        else:
+            self.__dict__["_depth_extractor"] = None
 
         # Pretrained weights
         if pretrained_ckpt:
@@ -98,6 +111,14 @@ class PL_EDM(pl.LightningModule):
         optimizer.zero_grad()
 
     def _trainval_inference(self, batch):
+        # (optional) compute depth hidden features outside EDM
+        if getattr(self, "_depth_extractor", None) is not None:
+            with torch.no_grad():
+                img0 = batch.get("depth_feat_image0", batch.get("image0"))
+                img1 = batch.get("depth_feat_image1", batch.get("image1"))
+                feat0, feat1 = self.__dict__["_depth_extractor"](img0, img1)
+                batch["depth_feat0"] = feat0
+                batch["depth_feat1"] = feat1
         with self.profiler.profile("Compute coarse supervision"):
             with torch.autocast(enabled=False, device_type="cuda"):
                 compute_supervision_coarse(batch, self.config)

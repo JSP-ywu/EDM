@@ -23,10 +23,6 @@ class EDM(nn.Module):
         # Modules
         self.backbone = ResNet18(config)
         self.neck = CIM(config)
-        if config['depth_from_extract'] and config['use_hidden']:
-            self.depth_extractor = DepthAnythingFeatureExtractor()
-            self.depth_extractor.requires_grad_(False)
-            self.depth_extractor.eval()
         self.coarse_matching = CoarseMatching(config)
         self.fine_matching = FineMatching(config)
 
@@ -58,13 +54,6 @@ class EDM(nn.Module):
             feats = self.backbone(
                 torch.cat([data["image0"], data["image1"]], dim=0))
             f8, f16, f32, f8_fine = feats
-            if self.config["use_hidden"] and self.config["depth_from_extract"]:
-                with torch.no_grad():
-                    # print('[DEBUG] Extracting depth features...')
-                    depth_feat0, depth_feat1 = self.depth_extractor(data["depth_feat_image0"],
-                                                                    data["depth_feat_image1"])
-                    data["depth_feat0"] = depth_feat0
-                    data["depth_feat1"] = depth_feat1
             ms_feats = f8, f16, f32
             feat_f0, feat_f1 = f8_fine.chunk(2)
         else:
