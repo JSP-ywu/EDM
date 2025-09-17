@@ -236,14 +236,15 @@ class EDMLoss(nn.Module):
 
         M = mkpts0_c.shape[0]
         P = pred_coord.shape[0]
-
-        if not self.bi_directional_refine:
+        print('mkpts0_c: ', mkpts0_c)
+        print('mkpts1_c: ', mkpts1_c)
+        if P == M:
             # One-direction (0->1)
-            mk0 = mkpts0_c                          # [M,2], constant wrt params
-            mk1 = mkpts1_c + pred_coord * local_res * scale1  # [M,2], depends on pred_coord
+            mk0 = mkpts0_c                          # [M,2]
+            mk1 = mkpts1_c + pred_coord * local_res * scale1  # [M,2]
             m_bids = b_ids
             w = data.get("mconf", None)
-        elif self.bi_directional_refine:
+        elif P == 2 * M:
             # Bi-directional (0->1 and 1->0). First M correspond to 0->1, last M to 1->0
             pred01 = pred_coord[:M]
             pred10 = pred_coord[M:]
@@ -259,7 +260,7 @@ class EDMLoss(nn.Module):
             else:
                 w = None
         else:
-            # Unexpected shape; fall back to non-bidir assumption
+            # Unexpected shape; fall back to one-direction using the first M rows
             mk0 = mkpts0_c
             mk1 = mkpts1_c + pred_coord[:M] * local_res * scale1
             m_bids = b_ids
