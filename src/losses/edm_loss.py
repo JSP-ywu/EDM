@@ -290,7 +290,32 @@ class EDMLoss(nn.Module):
         # --- Fundamental matrices per batch ---
         F_all = _compute_f_from_rt_k(R, t, K0, K1)      # [B,3,3], no gradients
         F_sel = F_all[m_bids]                           # [*,3,3]
+        # Align F to the (scaled) pixel coordinate system used by mk0/mk1.
+        # If x' = S x  (S = diag(sx, sy, 1)), then  F' = S1^{-T} * F * S0^{-1}.
+        # Here (sx, sy) are the per-pair scales used when forming mkpts*_c.
+        if P == 2 * M:
+            s0_pair = torch.cat([scale0_M, scale0_M], dim=0)  # [2M, 2]
+            s1_pair = torch.cat([scale1_M, scale1_M], dim=0)  # [2M, 2]
+        else:
+            s0_pair = scale0_M                                 # [M, 2]
+            s1_pair = scale1_M                                 # [M, 2]
 
+        eps = 1e-12
+        sx0 = s0_pair[:, 0].clamp_min(eps)
+        sy0 = s0_pair[:, 1].clamp_min(eps)
+        sx1 = s1_pair[:, 0].clamp_min(eps)
+        sy1 = s1_pair[:, 1].clamp_min(eps)
+
+        S0_inv = torch.zeros(F_sel.size(0), 3, 3, device=F_sel.device, dtype=F_sel.dtype)
+        S1_inv = torch.zeros_like(S0_inv)
+        S0_inv[:, 0, 0] = 1.0 / sx0
+        S0_inv[:, 1, 1] = 1.0 / sy0
+        S0_inv[:, 2, 2] = 1.0
+        S1_inv[:, 0, 0] = 1.0 / sx1
+        S1_inv[:, 1, 1] = 1.0 / sy1
+        S1_inv[:, 2, 2] = 1.0
+
+        F_img = torch.einsum('mij,mjk,mkl->mil', S1_inv.transpose(1, 2), F_sel, S0_inv)
         # --- Sampson distance with gradients ---
         d = _sampson_distance_points(mk0, mk1, F_sel)   # [*]
 
