@@ -238,6 +238,8 @@ class EDMLoss(nn.Module):
         P = pred_coord.shape[0]
         print('mkpts0_c: ', mkpts0_c)
         print('mkpts1_c: ', mkpts1_c)
+        print('scale0:', scale0)
+        print('scale1:', scale1)
         if P == M:
             # One-direction (0->1)
             mk0 = mkpts0_c                          # [M,2]
