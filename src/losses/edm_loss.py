@@ -62,6 +62,13 @@ class EDMLoss(nn.Module):
         self.bi_directional_refine = self.config['edm']['fine']['bi_directional_refine']
         self.lambda_epi = float(self.loss_config.get("epi_weight", 0.0))
         self.epi_tau = float(self.loss_config.get("epi_tau", 1.0))
+    
+        # EPI robustification defaults
+        self.epi_min_parallax_deg = float(self.loss_config.get("epi_min_parallax_deg", 1.5))
+        self.epi_gate_mult = float(self.loss_config.get("epi_gate_mult", 2.5))
+        self.cycle_weight = float(self.loss_config.get("cycle_weight", 0.0))
+        # EMA scale for epi residual normalization
+        self.register_buffer("epi_s_ema", torch.tensor(1.0))
 
     def compute_coarse_loss(self, conf, conf_gt, weight=None):
         """Point-wise CE / Focal Loss with 0 / 1 confidence as gt.
@@ -300,7 +307,7 @@ class EDMLoss(nn.Module):
             s0_pair = scale0_M                                 # [M, 2]
             s1_pair = scale1_M                                 # [M, 2]
 
-        eps = 1e-12
+        eps = 1e-12 # For preventing divided-by-zero
         sx0 = s0_pair[:, 0].clamp_min(eps)
         sy0 = s0_pair[:, 1].clamp_min(eps)
         sx1 = s1_pair[:, 0].clamp_min(eps)
@@ -317,24 +324,106 @@ class EDMLoss(nn.Module):
 
         F_img = torch.einsum('mij,mjk,mkl->mil', S1_inv.transpose(1, 2), F_sel, S0_inv)
         # --- Sampson distance with gradients ---
-        d = _sampson_distance_points(mk0, mk1, F_sel)   # [*]
+        d = _sampson_distance_points(mk0, mk1, F_img)   # [*]
 
-        # Optional confidence weighting
+        # === Train-time gating for stability ===
+        # Confidence mask
         if w is not None:
-            w = w.clamp_min(1e-3)
+            w = w.clamp_min(1e-6)
+            mask_conf = w > 0.0
         else:
             w = torch.ones_like(d)
+            mask_conf = torch.ones_like(d, dtype=torch.bool)
 
-        # Robust scale normalization
-        s = d.detach().median().clamp_min(1e-3)
-        d_norm = d / s
+        # Parallax gate (skip ill-conditioned pairs: near-pure rotation / very low parallax)
+        try:
+            ones = mk0.new_ones(mk0.size(0), 1)
+            x0h = torch.cat([mk0, ones], dim=1)
+            x1h = torch.cat([mk1, ones], dim=1)
+            # bearings in each camera frame
+            K0_inv_sel = torch.inverse(K0)[m_bids]
+            K1_inv_sel = torch.inverse(K1)[m_bids]
+            v0 = torch.einsum('mij,mj->mi', K0_inv_sel, x0h)
+            v1 = torch.einsum('mij,mj->mi', K1_inv_sel, x1h)
+            v0 = v0 / (v0.norm(dim=1, keepdim=True) + 1e-9)
+            v1 = v1 / (v1.norm(dim=1, keepdim=True) + 1e-9)
+            # rotate v0 into cam1 frame
+            R_sel = R[m_bids]
+            v0_to_1 = torch.einsum('mij,mj->mi', R_sel, v0)
+            cosang = (v0_to_1 * v1).sum(dim=1).clamp(-1.0, 1.0)
+            parallax_deg = torch.rad2deg(torch.acos(cosang))
+            mask_parallax = parallax_deg > self.epi_min_parallax_deg
+        except Exception:
+            # if anything goes wrong, don't drop by parallax
+            mask_parallax = torch.ones_like(d, dtype=torch.bool)
 
-        # Robust penalty
-        loss_per = F.softplus(d_norm / self.epi_tau)
+        # Distance gate (adaptive, median-based)
+        d_med = d.detach().median()
+        gate_thr = d_med * self.epi_gate_mult
+        mask_dist = d < gate_thr
 
-        # Weighted mean
-        loss = (w * loss_per).sum() / (w.sum() + 1e-9)
+        valid = mask_conf & mask_parallax & mask_dist
+        if valid.sum() < 16:
+            return None
+
+        d = d[valid]
+        w = w[valid]
+
+        # === Robust scale (EMA of median) and Charbonnier penalty ===
+        s_now = d.detach().median().clamp_min(1e-3)
+        # EMA update (no grad)
+        self.epi_s_ema = 0.99 * self.epi_s_ema + 0.01 * s_now
+        s = float(self.epi_s_ema)
+
+        d_norm = d / (s + 1e-9)
+        eps = 1e-6
+        rho = torch.sqrt((d_norm / self.epi_tau) ** 2 + eps)  # Charbonnier
+
+        loss = (w * rho).sum() / (w.sum() + 1e-9)
         return loss
+
+    def compute_cycle_loss(self, data):
+        """Train-only: encourage 0->1 and 1->0 fine offsets to cancel (same pixel units).
+            Returns: scalar loss or None
+        """
+        if not self.bi_directional_refine or self.cycle_weight <= 0:
+            return None
+        pred = data.get("pred_coord", None)
+        if pred is None:
+            return None
+        M = data["mkpts0_c"].shape[0]
+        if pred.shape[0] != 2 * M:
+            return None
+        
+        pred01, pred10 = pred[:M], pred[M:]
+        b_ids = data["b_ids"][:M]
+
+        # local offset -> pixels
+        try:
+            lr0 = float(data["hw0_i"][0]) / float(data["hw0_c"][0])
+            lr1 = float(data["hw1_i"][0]) / float(data["hw1_c"][0])
+            local_res = (lr0 + lr1) * 0.5
+        except Exception:
+            local_res = float(self.config["edm"]["local_resolution"])  # fallback
+
+        scale0_M = data["scale0"][b_ids] if "scale0" in data else pred01.new_ones(M, 2)
+        scale1_M = data["scale1"][b_ids] if "scale1" in data else pred01.new_ones(M, 2)
+
+        off01_pix = pred01 * local_res * scale1_M
+        off10_pix = pred10 * local_res * scale0_M
+
+        # cycle consistency in the same reference frame (approximate)
+        res = off01_pix + off10_pix  # [M,2]
+        # weight by confidence if available
+        w = data.get("mconf", None)
+        if w is not None and w.shape[0] >= M:
+            w = w[:M].clamp_min(1e-6)
+            loss_vec = F.smooth_l1_loss(res, res.new_zeros(res.shape), reduction="none").sum(dim=1)
+            loss = (w * loss_vec).sum() / (w.sum() + 1e-9)
+        else:
+            loss = F.smooth_l1_loss(res, res.new_zeros(res.shape), reduction="mean")
+        return loss
+
 
 
     def forward(self, data):
@@ -374,7 +463,15 @@ class EDMLoss(nn.Module):
             # 1 is the upper bound
             loss_scalars.update({"loss_f": torch.tensor(1.0)})
             
-        # 3. epipolar loss-only regularization (does not change forward graph)
+
+        # 3. cycle consistency (train-only, optional)
+        if self.cycle_weight > 0:
+            cycle_loss = self.compute_cycle_loss(data)
+            if cycle_loss is not None:
+                loss = loss + self.cycle_weight * cycle_loss
+                loss_scalars.update({"loss_cycle": cycle_loss.clone().detach().cpu()})
+
+        # 4. epipolar loss-only regularization (does not change forward graph)
         loss_epi_val = None
         if self.lambda_epi > 0:
             loss_epi_val = self.compute_epi_loss(data)

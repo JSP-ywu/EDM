@@ -220,6 +220,7 @@ class DepthAnythingFeatureExtractor(nn.Module):
 
     def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
         super().__init__()
+        # print('Depth Anything v2 Initialization....')
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
         self.processor = AutoImageProcessor.from_pretrained(model_name,

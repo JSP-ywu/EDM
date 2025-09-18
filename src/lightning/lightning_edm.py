@@ -61,7 +61,7 @@ class PL_EDM(pl.LightningModule):
             self.__dict__["_depth_extractor"] = extractor
         else:
             self.__dict__["_depth_extractor"] = None
-
+     
         # Pretrained weights
         if pretrained_ckpt:
             state_dict = torch.load(pretrained_ckpt, map_location="cpu")[
@@ -113,10 +113,14 @@ class PL_EDM(pl.LightningModule):
     def _trainval_inference(self, batch):
         # (optional) compute depth hidden features outside EDM
         if getattr(self, "_depth_extractor", None) is not None:
+            # print('Extract hidden state....')
             with torch.no_grad():
                 img0 = batch.get("depth_feat_image0", batch.get("image0"))
                 img1 = batch.get("depth_feat_image1", batch.get("image1"))
                 feat0, feat1 = self.__dict__["_depth_extractor"](img0, img1)
+                dev = batch["image0"].device
+                feat0 = feat0.to(dev, non_blocking=True)
+                feat1 = feat1.to(dev, non_blocking=True)
                 batch["depth_feat0"] = feat0
                 batch["depth_feat1"] = feat1
         with self.profiler.profile("Compute coarse supervision"):
@@ -416,7 +420,12 @@ class PL_EDM(pl.LightningModule):
 
         self.test_step_outputs.clear()
     def on_fit_start(self):
-        # 분산 토폴로지 로깅 + config 동기화
+        # Ensure depth extractor is on the same device as the module
+        if getattr(self, "_depth_extractor", None) is not None:
+            try:
+                self._depth_extractor.to(self.device)
+            except Exception as e:
+                print(f"[on_fit_start] failed to move depth extractor to {self.device}: {e}")
         try:
             ws = getattr(self.trainer, "world_size", None)
             nd = getattr(self.trainer, "num_nodes", None)
