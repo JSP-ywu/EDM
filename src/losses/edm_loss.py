@@ -64,9 +64,13 @@ class EDMLoss(nn.Module):
         self.epi_tau = float(self.loss_config.get("epi_tau", 1.0))
     
         # EPI robustification defaults
-        self.epi_min_parallax_deg = float(self.loss_config.get("epi_min_parallax_deg", 1.5))
-        self.epi_gate_mult = float(self.loss_config.get("epi_gate_mult", 2.5))
-        self.cycle_weight = float(self.loss_config.get("cycle_weight", 0.0))
+        self.epi_min_parallax_deg = float(self.loss_config.get("epi_min_parallax_deg", 0.5))
+        self.epi_gate_mult = float(self.loss_config.get("epi_gate_mult", 5.0))
+        self.cycle_weight = float(self.loss_config.get("cycle_weight", 0.2))
+
+        self.epi_warmup_steps = int(self.loss_config.get("epi_warmup_steps", 6900))
+        self.epi_full_steps   = int(self.loss_config.get("epi_full_steps", 69000))
+
         # EMA scale for epi residual normalization
         self.register_buffer("epi_s_ema", torch.tensor(1.0))
 
@@ -465,19 +469,24 @@ class EDMLoss(nn.Module):
             
 
         # 3. cycle consistency (train-only, optional)
+        cycle_log = torch.tensor(0.0)
         if self.cycle_weight > 0:
             cycle_loss = self.compute_cycle_loss(data)
             if cycle_loss is not None:
                 loss = loss + self.cycle_weight * cycle_loss
-                loss_scalars.update({"loss_cycle": cycle_loss.clone().detach().cpu()})
+                cycle_log = cycle_loss.detach()
+        loss_scalars.update({"loss_cycle": cycle_log.clone().cpu()})
 
         # 4. epipolar loss-only regularization (does not change forward graph)
-        loss_epi_val = None
+        epi_log = torch.tensor(0.0)
+        gs = int(data.get("global_step", getattr(self, "_internal_step", 0)))
+        warm_ratio = min(1.0, gs / max(1, self.epi_warmup_steps))
+        lambda_epi_now = float(self.lambda_epi) * warm_ratio
         if self.lambda_epi > 0:
             loss_epi_val = self.compute_epi_loss(data)
             if loss_epi_val is not None:
-                loss = loss + self.lambda_epi * loss_epi_val
-                loss_scalars.update({"loss_epi": loss_epi_val.clone().detach().cpu()})
-
-        loss_scalars.update({"loss": loss.clone().detach().cpu()})
+                loss = loss + lambda_epi_now * loss_epi_val
+                epi_log = loss_epi_val.detach()
+        loss_scalars.update({"loss_epi": epi_log.clone().cpu(),
+                             "lambda_epi": torch.tensor(lambda_epi_now).cpu()})
         data.update({"loss": loss, "loss_scalars": loss_scalars})

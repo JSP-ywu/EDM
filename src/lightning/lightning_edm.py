@@ -111,6 +111,7 @@ class PL_EDM(pl.LightningModule):
         optimizer.zero_grad()
 
     def _trainval_inference(self, batch):
+        batch["global_step"] = int(self.global_step)
         # (optional) compute depth hidden features outside EDM
         if getattr(self, "_depth_extractor", None) is not None:
             # print('Extract hidden state....')
@@ -137,7 +138,7 @@ class PL_EDM(pl.LightningModule):
 
         with self.profiler.profile("Compute losses"):
             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
-                self.loss(batch)
+                self.loss(data)
 
     def _compute_metrics(self, batch):
         # compute epi_errs for each match
