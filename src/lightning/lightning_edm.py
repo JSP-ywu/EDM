@@ -130,7 +130,7 @@ class PL_EDM(pl.LightningModule):
 
         with self.profiler.profile("EDM"):
             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
-                self.matcher(batch)
+                batch = self.matcher(batch)
 
         # with self.profiler.profile("Compute fine supervision"):
         #     with torch.autocast(enabled=False, device_type='cuda'):
@@ -138,7 +138,7 @@ class PL_EDM(pl.LightningModule):
 
         with self.profiler.profile("Compute losses"):
             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
-                self.loss(data)
+                self.loss(batch)
 
     def _compute_metrics(self, batch):
         # compute epi_errs for each match
@@ -338,24 +338,24 @@ class PL_EDM(pl.LightningModule):
         if not self.warmup:
             if self.config.EDM.HALF:
                 for i in range(50):
-                    self.matcher(batch)
+                    batch = self.matcher(batch)
             else:
                 with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
                     for i in range(50):
-                        self.matcher(batch)
+                        batch = self.matcher(batch)
             self.warmup = True
 
         torch.cuda.synchronize()
         if self.config.EDM.HALF:
             self.start_event.record()
-            self.matcher(batch)
+            batch = self.matcher(batch)
             self.end_event.record()
             torch.cuda.synchronize()
             self.total_ms += self.start_event.elapsed_time(self.end_event)
         else:
             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
                 self.start_event.record()
-                self.matcher(batch)
+                batch = self.matcher(batch)
                 self.end_event.record()
                 torch.cuda.synchronize()
                 self.total_ms += self.start_event.elapsed_time(self.end_event)

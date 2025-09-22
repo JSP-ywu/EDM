@@ -250,8 +250,9 @@ class EDM(nn.Module):
             mask = mconf > self.config['coarse']['mconf_thr']
             # You can add more filtering based on `score_01` here
             
-            return mkpts0_f[mask], mkpts1_f[mask], mconf[mask]
-        
+            return torch.cat(
+                [mkpts0_f[mask], mkpts1_f[mask], offset_01, score_01, mconf[mask].unsqueeze(dim=1)], 1)
+        return data
     def load_state_dict(self, state_dict, *args, **kwargs):
         for k in list(state_dict.keys()):
             if k.startswith("matcher."):
