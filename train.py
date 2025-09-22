@@ -123,7 +123,7 @@ def main():
     # Temporal argument for sbatch
     config.EDM.LOSS.EPI_WEIGHT = args.ew
     config.EDM.LOSS.EPI_TAU = args.et
-    config.EDM.LOSS.FINE.BCE_WEIGHT = args.bw
+    config.EDM.LOSS.BCE_WEIGHT = args.bw
     config.EDM.LOSS.CYCLE_WEIGHT = args.cw
 
     # scale lr and warmup-step automatically

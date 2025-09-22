@@ -69,8 +69,8 @@ _CN.EDM.LOSS.FINE_WEIGHT = 0.2
 _CN.EDM.LOSS.Q_DISTRIBUTION = "laplace"  # options: ['laplace', 'gaussian']
 
 # -- # fine-level BCE losses
-_CN.EDM.LOSS.FINE.BCE_WEIGHT = 0.5
-_CN.EDM.LOSS.FINE.FINE_PATCH_SIZE = 8
+_CN.EDM.LOSS.BCE_WEIGHT = 0.5
+_CN.EDM.FINE.FINE_PATCH_SIZE = 8
 
 # -- # epiolar loss-only setting
 # Comment out below 2 lines if not used. Default value exists.
