@@ -433,12 +433,30 @@ class FineMatchingV2(nn.Module):
         grid = torch.stack([grid_x, grid_y], dim=-1)
         return grid.unsqueeze(0).repeat(M, 1, 1, 1)
 
+    # def _extract_patches(self, feat_map, coords_c_scaled, b_ids):
+    #     '''
+    #     Differentiable patch extraction using F.grid_sample
+    #     '''
+    #     B, C, H, W = feat_map.shape
+    #     M = coords_c_scaled.shape[0]
+    #     coords_norm = coords_c_scaled.clone()
+    #     coords_norm[:, 0] = (coords_norm[:, 0] / (W - 1)) * 2 - 1
+    #     coords_norm[:, 1] = (coords_norm[:, 1] / (H - 1)) * 2 - 1
+    #     coords_norm = coords_norm.view(M, 1, 1, 2)
+
+    #     patch_grid_base = self._create_patch_grid(M, self.fine_patch_size, feat_map.device)
+    #     patch_grid_base[..., 0] *= (self.fine_patch_size - 1) / 2 / (W - 1)
+    #     patch_grid_base[..., 1] *= (self.fine_patch_size - 1) / 2 / (H - 1)
+    #     sampling_grid = patch_grid_base + coords_norm
+        
+    #     patches = F.grid_sample(feat_map[b_ids], sampling_grid, align_corners=False)
+    #     return patches # [M, C, fine_patch_size, fine_patch_size]
+
     def _extract_patches(self, feat_map, coords_c_scaled, b_ids):
-        '''
-        Differentiable patch extraction using F.grid_sample
-        '''
-        B, C, H, W = feat_map.shape
+        # This function receives a single feature map
+        B, C, H, W = feat_map.shape # B is now always 1
         M = coords_c_scaled.shape[0]
+
         coords_norm = coords_c_scaled.clone()
         coords_norm[:, 0] = (coords_norm[:, 0] / (W - 1)) * 2 - 1
         coords_norm[:, 1] = (coords_norm[:, 1] / (H - 1)) * 2 - 1
@@ -449,8 +467,9 @@ class FineMatchingV2(nn.Module):
         patch_grid_base[..., 1] *= (self.fine_patch_size - 1) / 2 / (H - 1)
         sampling_grid = patch_grid_base + coords_norm
         
-        patches = F.grid_sample(feat_map[b_ids], sampling_grid, align_corners=False)
-        return patches # [M, C, fine_patch_size, fine_patch_size]
+        # We repeat the single feature map M times to match the grid shape
+        patches = F.grid_sample(feat_map.repeat(M, 1, 1, 1), sampling_grid, align_corners=False)
+        return patches
 
     @staticmethod
     def _soft_argmax_2d(corr_map, temperature=0.1):
@@ -501,49 +520,66 @@ class FineMatchingV2(nn.Module):
         return total_offset_in_patch_pixels, sigma, logits
 
     def forward(self, feat_f0, feat_f1, data, mask_f0=None, mask_f1=None):
-        b_ids, mkpts0_c, mkpts1_c = data['b_ids'], data['mkpts0_c'], data['mkpts1_c']
+        # Get coarse match info from the data dictionary
+        b_ids, i_ids, j_ids = data['b_ids'], data['i_ids'], data['j_ids']
+        mkpts0_c, mkpts1_c = data['mkpts0_c'], data['mkpts1_c']
+        bs = data['bs']
+
+        # Scale coarse coordinates to the fine feature map's resolution
         mkpts0_c_s = mkpts0_c / self.local_resolution
         mkpts1_c_s = mkpts1_c / self.local_resolution
 
-        # --- Extract patches for both directions ---
-        patches0 = self._extract_patches(feat_f0, mkpts0_c_s, b_ids)
-        patches1 = self._extract_patches(feat_f1, mkpts1_c_s, b_ids)
-        mask_patches0, mask_patches1 = None, None
-        if mask_f0 is not None:
-            mask_patches0 = self._extract_patches(mask_f0.unsqueeze(1).float(), mkpts0_c_s, b_ids)
-            mask_patches1 = self._extract_patches(mask_f1.unsqueeze(1).float(), mkpts1_c_s, b_ids)
+        # Lists to store results from each item in the batch
+        all_offsets, all_sigmas, all_logits = [], [], []
 
-        # --- Run refinement in both directions ---
-        offset_01, sigma_01, logits_01 = self._predict_refinement(patches0, patches1, mask_patches0)
-        offset_10, sigma_10, logits_10 = self._predict_refinement(patches1, patches0, mask_patches1)
+        # Iterate over each image pair in the batch
+        for b in range(bs):
+            # Select matches belonging to the current batch item
+            batch_mask = (b_ids == b)
+            if not batch_mask.any():
+                continue
 
-        # --- Concatenate results to match supervision format ---
-        pred_offset_cat = torch.cat([offset_01, offset_10], dim=0)
-        pred_sigma_cat = torch.cat([sigma_01, sigma_10], dim=0)
-        pred_logits_cat = torch.cat([logits_01, logits_10], dim=0)
-        
-        # --- ADDED: Calculate nf_loss if in training mode ---
+            # --- 1. Extract local patches for the current batch item ---
+            # The input feature map is now [1, C, H, W], which is small
+            # The number of matches per item is K (topk)
+            patches0 = self._extract_patches(feat_f0[b:b+1], mkpts0_c_s[batch_mask], b_ids=None) # b_ids not needed here
+            patches1 = self._extract_patches(feat_f1[b:b+1], mkpts1_c_s[batch_mask], b_ids=None)
+            
+            mask_patches0, mask_patches1 = None, None
+            if mask_f0 is not None:
+                mask_patches0 = self._extract_patches(mask_f0[b:b+1].unsqueeze(1).float(), mkpts0_c_s[batch_mask], b_ids=None)
+                mask_patches1 = self._extract_patches(mask_f1[b:b+1].unsqueeze(1).float(), mkpts1_c_s[batch_mask], b_ids=None)
+
+            # --- 2. Run refinement in both directions for the current batch item ---
+            offset_01, sigma_01, logits_01 = self._predict_refinement(patches0, patches1, mask_patches0)
+            offset_10, sigma_10, logits_10 = self._predict_refinement(patches1, patches0, mask_patches1)
+
+            # Append results to the lists
+            all_offsets.append(torch.cat([offset_01, offset_10], dim=0))
+            all_sigmas.append(torch.cat([sigma_01, sigma_10], dim=0))
+            all_logits.append(torch.cat([logits_01, logits_10], dim=0))
+
+        # --- Concatenate results from all batch items ---
+        pred_offset_cat = torch.cat(all_offsets, dim=0)
+        pred_sigma_cat = torch.cat(all_sigmas, dim=0)
+        pred_logits_cat = torch.cat(all_logits, dim=0)
+
+        # --- Calculate nf_loss if in training mode ---
         if 'target_uv' in data:
             gt_uv_norm = data["target_uv"]
             gt_uv_weight = data["target_uv_weight"]
             
-            # Normalize prediction to match GT's [-0.5, 0.5] scale
             pred_offset_norm = pred_offset_cat / self.fine_patch_size
-
-            # Select valid samples for loss calculation
             pred_masked = pred_offset_norm[gt_uv_weight]
             gt_masked = gt_uv_norm[gt_uv_weight]
             sigma_masked = pred_sigma_cat[gt_uv_weight]
-
-            # Calculate the Normalizing Flow loss component
             sigma_masked_clamped = torch.clamp(sigma_masked, 1e-6, 1-1e-6)
+
             bar_mu = (pred_masked - gt_masked) / sigma_masked_clamped
             log_phi = self.flow.log_prob(bar_mu).unsqueeze(-1)
-            
-            # This is the nf_loss for each valid sample
             nf_loss = torch.log(sigma_masked_clamped) - log_phi
             data.update({"nf_loss": nf_loss})
-            
+
         # --- Update data dictionary for loss module and post-processing ---
         data.update({
             "pred_offset_fine_px": pred_offset_cat, 
