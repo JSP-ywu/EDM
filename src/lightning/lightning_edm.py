@@ -429,27 +429,30 @@ class PL_EDM(pl.LightningModule):
     def _filter_and_compute_final_matches(self, data):
         """
         Applies filters to the raw fine-level predictions to get the final match set.
-        This is necessary for evaluation and plotting.
-        Updates data with 'mkpts0_f', 'mkpts1_f', 'm_bids', and 'mconf'.
+        This version correctly handles the symmetrical bi-directional predictions.
         """
-        # Get predictions from FineMatchingV2
-        pred_offset = data['pred_offset']
+        # Get raw predictions from the data dictionary
+        pred_offset_px = data['pred_offset_fine_px'] * self.matcher.local_resolution
         pred_score = data['pred_score'] # This is 1 - sigma
         mconf = data['mconf']
         mkpts0_c = data['mkpts0_c']
         mkpts1_c = data['mkpts1_c']
 
         # The predictions are concatenated [0->1, 1->0]
-        offset_01, offset_10 = torch.chunk(pred_offset, 2, dim=0)
+        offset_01, offset_10 = torch.chunk(pred_offset_px, 2, dim=0)
         score_01, score_10 = torch.chunk(pred_score, 2, dim=0)
 
-        # --- Bi-directional Consistency Check ---
-        # Choose the direction with higher confidence (smaller sigma -> higher score)
+        # --- Symmetrical Bi-directional Check ---
+        mkpts0_f_from_10 = mkpts0_c + offset_10 # Refined point in 0, from 1's perspective
+        mkpts1_f_from_10 = mkpts1_c            # Anchor in 1 (coarse center)
+
+        mkpts0_f_from_01 = mkpts0_c            # Anchor in 0 (coarse center)
+        mkpts1_f_from_01 = mkpts1_c + offset_01 # Refined point in 1, from 0's perspective
+
+        # Choose the entire coordinate pair based on the more confident direction
         use_01_mask = score_01 > score_10
-        
-        # Final coordinates based on the more confident direction
-        mkpts0_f = torch.where(use_01_mask.unsqueeze(1), mkpts0_c, mkpts0_c + offset_10)
-        mkpts1_f = torch.where(use_01_mask.unsqueeze(1), mkpts1_c + offset_01, mkpts1_c)
+        mkpts0_f = torch.where(use_01_mask.unsqueeze(1), mkpts0_f_from_01, mkpts0_f_from_10)
+        mkpts1_f = torch.where(use_01_mask.unsqueeze(1), mkpts1_f_from_01, mkpts1_f_from_10)
         
         # Final confidence scores
         final_score = torch.where(use_01_mask, score_01, score_10)
@@ -475,8 +478,8 @@ class PL_EDM(pl.LightningModule):
             'm_bids': data['b_ids'][conf_mask],
             'mkpts0_f': mkpts0_f[conf_mask],
             'mkpts1_f': mkpts1_f[conf_mask],
-            'mconf': mconf[conf_mask], # Also filter the coarse confidence
-            'mconf_fine': final_score[conf_mask] # Store the fine confidence
+            'mconf': mconf[conf_mask],
+            'mconf_fine': final_score[conf_mask]
         })
 
     def on_fit_start(self):
