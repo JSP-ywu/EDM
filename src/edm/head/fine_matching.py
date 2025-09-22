@@ -383,3 +383,160 @@ class FineMatching(nn.Module):
                 "mconf": data["mconf"][mask],
             }
         )
+
+class FineMatchingV2(nn.Module):
+    """
+    FineMatching module with dynamic anchor selection based on local correlation.
+    - Extracts 2D fine-level patches for each coarse match.
+    - Computes a local correlation map to find a 'dynamic anchor'.
+    - Regresses a sub-pixel offset from the feature at this dynamic anchor.
+    - Predicts uncertainty (sigma) for RLE Loss and confidence for BCE Loss.
+    - Handles bi-directional refinement internally.
+    """
+    def __init__(self, config):
+        super().__init__()
+        # --- Configuration ---
+        self.config = config
+        self.block_dims = config["backbone"]["block_dims"]
+        self.local_resolution = config["local_resolution"]
+        self.patch_size = config["fine"]["patch_size"]
+        self.coord_length = config["fine"]["coord_length"]
+
+        # --- Network Heads ---
+        feature_dim = self.block_dims[-3] # f8_fine has this channel dimension
+        
+        self.coord_head = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim), nn.ReLU(),
+            nn.Linear(feature_dim, (self.coord_length + 2) * 2) # for both x and y
+        )
+        self.confidence_head = nn.Sequential(
+            nn.Linear(feature_dim, feature_dim), nn.ReLU(),
+            nn.Linear(feature_dim, 1)
+        )
+        self.flow = RealNVP()
+        self.init_params()
+
+    def init_params(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, a=0.1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    @staticmethod
+    def _create_patch_grid(M, patch_size, device):
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, patch_size, device=device),
+            torch.linspace(-1, 1, patch_size, device=device),
+            indexing="ij"
+        )
+        grid = torch.stack([grid_x, grid_y], dim=-1)
+        return grid.unsqueeze(0).repeat(M, 1, 1, 1)
+
+    def _extract_patches(self, feat_map, coords_c_scaled, b_ids):
+        B, C, H, W = feat_map.shape
+        M = coords_c_scaled.shape[0]
+        coords_norm = coords_c_scaled.clone()
+        coords_norm[:, 0] = (coords_norm[:, 0] / (W - 1)) * 2 - 1
+        coords_norm[:, 1] = (coords_norm[:, 1] / (H - 1)) * 2 - 1
+        coords_norm = coords_norm.view(M, 1, 1, 2)
+
+        patch_grid_base = self._create_patch_grid(M, self.patch_size, feat_map.device)
+        patch_grid_base[..., 0] *= (self.patch_size - 1) / 2 / (W - 1)
+        patch_grid_base[..., 1] *= (self.patch_size - 1) / 2 / (H - 1)
+        sampling_grid = patch_grid_base + coords_norm
+        
+        patches = F.grid_sample(feat_map[b_ids], sampling_grid, align_corners=False)
+        return patches
+
+    @staticmethod
+    def _soft_argmax_2d(corr_map, temperature=0.1):
+        M, H, W = corr_map.shape
+        y, x = torch.meshgrid(
+            torch.arange(H, device=corr_map.device, dtype=torch.float32),
+            torch.arange(W, device=corr_map.device, dtype=torch.float32), 
+            indexing='ij'
+        )
+        softmax_map = F.softmax(corr_map.view(M, -1) / temperature, dim=1).view(M, H, W)
+        coord_x = (softmax_map * x).sum(dim=[1, 2])
+        coord_y = (softmax_map * y).sum(dim=[1, 2])
+        return torch.stack([coord_x, coord_y], dim=1)
+
+    def _predict_refinement(self, query_patches, ref_patches, query_mask_patches):
+        M, C, H, W = query_patches.shape
+        query_flat = query_patches.view(M, C, H * W)
+        ref_flat = ref_patches.view(M, C, H * W)
+
+        if query_mask_patches is not None:
+            query_flat *= query_mask_patches.view(M, 1, H * W)
+        
+        local_corr = torch.einsum('mci,mcj->mij', query_flat, ref_flat)
+        local_corr_peak_scores = local_corr.max(dim=2)[0].view(M, H, W)
+        
+        dynamic_anchor_offset_px = self._soft_argmax_2d(local_corr_peak_scores)
+        
+        anchor_grid_norm = (dynamic_anchor_offset_px.view(M, 1, 1, 2) / (H - 1)) * 2 - 1
+        anchor_features = F.grid_sample(query_patches, anchor_grid_norm, align_corners=False).squeeze(-1).squeeze(-1)
+
+        coord_out = self.coord_head(anchor_features)
+        logits = self.confidence_head(anchor_features).squeeze(-1)
+        
+        x_out, y_out = torch.split(coord_out, self.coord_length + 2, dim=1)
+        
+        sub_pixel_x = soft_argmax(x_out[:, :self.coord_length+1]) / self.coord_length - 0.5
+        x_sigma = x_out[:, -1:].sigmoid()
+        sub_pixel_y = soft_argmax(y_out[:, :self.coord_length+1]) / self.coord_length - 0.5
+        y_sigma = y_out[:, -1:].sigmoid()
+
+        sub_pixel_offset = torch.cat([sub_pixel_x, sub_pixel_y], dim=1)
+        sigma = torch.cat([x_sigma, y_sigma], dim=1)
+        dynamic_anchor_offset_centered = dynamic_anchor_offset_px - (self.patch_size / 2.0)
+        
+        # Total offset is the sum of the anchor shift and the sub-pixel refinement
+        total_offset_in_patch_pixels = dynamic_anchor_offset_centered + sub_pixel_offset
+        
+        return total_offset_in_patch_pixels, sigma, logits
+
+    def forward(self, feat_f0, feat_f1, data, mask_f0=None, mask_f1=None):
+        b_ids, mkpts0_c, mkpts1_c = data['b_ids'], data['mkpts0_c'], data['mkpts1_c']
+        mkpts0_c_s = mkpts0_c / self.local_resolution
+        mkpts1_c_s = mkpts1_c / self.local_resolution
+
+        # --- Extract patches for both directions ---
+        patches0 = self._extract_patches(feat_f0, mkpts0_c_s, b_ids)
+        patches1 = self._extract_patches(feat_f1, mkpts1_c_s, b_ids)
+        mask_patches0, mask_patches1 = None, None
+        if mask_f0 is not None:
+            mask_patches0 = self._extract_patches(mask_f0.unsqueeze(1).float(), mkpts0_c_s, b_ids)
+            mask_patches1 = self._extract_patches(mask_f1.unsqueeze(1).float(), mkpts1_c_s, b_ids)
+
+        # --- Run refinement in both directions ---
+        # 0 -> 1 refinement
+        offset_01, sigma_01, logits_01 = self._predict_refinement(patches0, patches1, mask_patches0)
+        
+        # 1 -> 0 refinement
+        offset_10, sigma_10, logits_10 = self._predict_refinement(patches1, patches0, mask_patches1)
+
+        # --- Concatenate results to match supervision format ---
+        # Note: The supervision GT is ordered as [offset01_gt, offset10_gt]
+        pred_offset_cat = torch.cat([offset_01, offset_10], dim=0)
+        pred_sigma_cat = torch.cat([sigma_01, sigma_10], dim=0)
+        pred_logits_cat = torch.cat([logits_01, logits_10], dim=0)
+        
+        # --- Update data dictionary for loss module ---
+        data.update({
+            "pred_offset": pred_offset_cat * self.local_resolution, # Scale to original image pixels
+            "pred_sigma": pred_sigma_cat,
+            "fine_match_logits": pred_logits_cat,
+            "pred_score": 1.0 - torch.mean(pred_sigma_cat, dim=-1), # For inference filtering
+        })
+        
+        # This part will be used by the loss function
+        if 'target_uv' in data:
+            pred_coord_for_loss = torch.cat([
+                mkpts1_c + (offset_01 * self.local_resolution),
+                mkpts0_c + (offset_10 * self.local_resolution)
+            ], dim=0)
+            data.update({"pred_coord_for_loss": pred_coord_for_loss})
+            
+        return data

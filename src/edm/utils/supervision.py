@@ -250,6 +250,10 @@ def spvs_fine(data, pad=0, window_size=8.0):
     data.update({"target_uv": target_uv / window_size})
     data.update({"target_uv_weight": pos_mask})  # [M, 1]
 
+    # ADDED: Explicitly add the GT labels for the BCE loss
+    # The inlier/outlier mask `pos_mask` is exactly what we need for the GT.
+    data.update({"fine_match_gt_labels": pos_mask})
+
 
 def compute_supervision_fine(data, pad=0, window_size=8.0):
     spvs_fine(data, pad, window_size)

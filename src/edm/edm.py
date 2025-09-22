@@ -1,5 +1,5 @@
 from ..utils.misc import detect_NaN
-from .head.fine_matching import FineMatching
+from .head.fine_matching import FineMatching, FineMatchingV2
 from .head.coarse_matching import CoarseMatching
 from .neck.neck import CIM, DepthAnythingFeatureExtractor
 from .backbone.resnet import ResNet18
@@ -24,7 +24,8 @@ class EDM(nn.Module):
         self.backbone = ResNet18(config)
         self.neck = CIM(config)
         self.coarse_matching = CoarseMatching(config)
-        self.fine_matching = FineMatching(config)
+        # self.fine_matching = FineMatching(config)
+        self.fine_matching = FineMatchingV2(config)
 
     def forward(self, data):
         """
@@ -84,6 +85,11 @@ class EDM(nn.Module):
         feat_c0, feat_c1 = self.neck(ms_feats, mask_c0, mask_c1,
                                      hidden0=hidden0, hidden1=hidden1,
                                      inject_hidden=self.config['use_hidden'])
+        
+        # ADDED: Store original 2D feature shapes before flattening
+        h_c0, w_c0 = feat_c0.shape[2:]
+        h_c1, w_c1 = feat_c1.shape[2:]
+        
         data.update(
             {
                 "hw0_c": feat_c0.shape[2:],
@@ -173,41 +179,79 @@ class EDM(nn.Module):
             )
 
         # 4. Fine-Level Matching
-        K0 = data["i_ids"].shape[0] // data["bs"]
-        K1 = data["j_ids"].shape[0] // data["bs"]
-        feat_f0 = feat_f0[data["b_ids"], data["i_ids"]
-                          ].reshape(data["bs"], K0, -1)
-        feat_f1 = feat_f1[data["b_ids"], data["j_ids"]
-                          ].reshape(data["bs"], K1, -1)
-        feat_c0 = feat_c0[data["b_ids"], data["i_ids"]
-                          ].reshape(data["bs"], K0, -1)
-        feat_c1 = feat_c1[data["b_ids"], data["j_ids"]
-                          ].reshape(data["bs"], K1, -1)
+        # K0 = data["i_ids"].shape[0] // data["bs"]
+        # K1 = data["j_ids"].shape[0] // data["bs"]
+        # feat_f0 = feat_f0[data["b_ids"], data["i_ids"]
+        #                   ].reshape(data["bs"], K0, -1)
+        # feat_f1 = feat_f1[data["b_ids"], data["j_ids"]
+        #                   ].reshape(data["bs"], K1, -1)
+        # feat_c0 = feat_c0[data["b_ids"], data["i_ids"]
+        #                   ].reshape(data["bs"], K0, -1)
+        # feat_c1 = feat_c1[data["b_ids"], data["j_ids"]
+        #                   ].reshape(data["bs"], K1, -1)
 
-        if self.bi_directional_refine:
-            # Bidirectional Refinement
-            offset, score = self.fine_matching(
-                torch.cat([feat_f0, feat_f1], dim=1),
-                torch.cat([feat_f1, feat_f0], dim=1),
-                torch.cat([feat_c0, feat_c1], dim=1),
-                torch.cat([feat_c1, feat_c0], dim=1),
-                data,
-            )
-        else:
-            offset, score = self.fine_matching(
-                feat_f0, feat_f1, feat_c0, feat_c1, data)
+        # if self.bi_directional_refine:
+        #     # Bidirectional Refinement
+        #     offset, score = self.fine_matching(
+        #         torch.cat([feat_f0, feat_f1], dim=1),
+        #         torch.cat([feat_f1, feat_f0], dim=1),
+        #         torch.cat([feat_c0, feat_c1], dim=1),
+        #         torch.cat([feat_c1, feat_c0], dim=1),
+        #         data,
+        #     )
+        # else:
+        #     offset, score = self.fine_matching(
+        #         feat_f0, feat_f1, feat_c0, feat_c1, data)
 
+        # if self.deploy:
+        #     if self.bi_directional_refine:
+        #         fine_offset01, fine_offset10 = offset.chunk(2)
+        #         fine_score01, fine_score10 = score.unsqueeze(dim=1).chunk(2)
+        #         output = torch.cat(
+        #             [mkpts0_c, mkpts1_c, fine_offset01, fine_offset10, fine_score01, fine_score10, mconf.unsqueeze(dim=1)], 1) # [K, 11]
+        #     else:
+        #         output = torch.cat(
+        #             [mkpts0_c, mkpts1_c, offset, score, mconf.unsqueeze(dim=1)], 1)
+        #     return output
+
+        # Do not re-index features. Instead, reshape the original fine features to 2D
+        h_f0, w_f0 = data['hw0_i'][0] // 8, data['hw0_i'][1] // 8
+        feat_f0_2d = rearrange(feat_f0, 'n (h w) c -> n c h w', h=h_f0, w=w_f0)
+        
+        h_f1, w_f1 = data['hw1_i'][0] // 8, data['hw1_i'][1] // 8
+        feat_f1_2d = rearrange(feat_f1, 'n (h w) c -> n c h w', h=h_f1, w=w_f1)
+        
+        # Prepare fine-level masks
+        mask_f0, mask_f1 = None, None
+        if 'mask0' in data:
+            mask_f0 = F.interpolate(data['mask0'].unsqueeze(1).float(), size=(h_f0, w_f0), mode='nearest').squeeze(1).bool()
+            mask_f1 = F.interpolate(data['mask1'].unsqueeze(1).float(), size=(h_f1, w_f1), mode='nearest').squeeze(1).bool()
+        
+        # Call the new fine_matching module
+        data = self.fine_matching(feat_f0_2d, feat_f1_2d, data, mask_f0, mask_f1)
+        
+        # The old bi-directional logic here is removed, as it's now handled internally.
+        
         if self.deploy:
-            if self.bi_directional_refine:
-                fine_offset01, fine_offset10 = offset.chunk(2)
-                fine_score01, fine_score10 = score.unsqueeze(dim=1).chunk(2)
-                output = torch.cat(
-                    [mkpts0_c, mkpts1_c, fine_offset01, fine_offset10, fine_score01, fine_score10, mconf.unsqueeze(dim=1)], 1) # [K, 11]
-            else:
-                output = torch.cat(
-                    [mkpts0_c, mkpts1_c, offset, score, mconf.unsqueeze(dim=1)], 1)
-            return output
+            # Deployment logic needs to be updated based on the new outputs
+            # This is a simplified example of how to reconstruct the final matches
+            mkpts0_c, mkpts1_c = data['mkpts0_c'], data['mkpts1_c']
+            pred_offset = data['pred_offset']
+            pred_score = data['pred_score']
+            mconf = data['mconf']
+            
+            offset_01, offset_10 = torch.chunk(pred_offset, 2, dim=0)
+            score_01, score_10 = torch.chunk(pred_score, 2, dim=0)
+            
+            mkpts0_f = mkpts0_c
+            mkpts1_f = mkpts1_c + offset_01
 
+            # A simple filtering for deployment
+            mask = mconf > self.config['coarse']['mconf_thr']
+            # You can add more filtering based on `score_01` here
+            
+            return mkpts0_f[mask], mkpts1_f[mask], mconf[mask]
+        
     def load_state_dict(self, state_dict, *args, **kwargs):
         for k in list(state_dict.keys()):
             if k.startswith("matcher."):
