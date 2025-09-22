@@ -190,40 +190,37 @@ class EDMLoss(nn.Module):
 
         # return loss.mean() * f_weight
         """
-        Computes the RLE loss based on outputs from FineMatchingV2.
+        Computes the RLE loss based on pre-calculated outputs from FineMatchingV2.
         """
-        gt_uv = data["target_uv"]
+        gt_uv_norm = data["target_uv"]
         gt_uv_weight = data["target_uv_weight"]
         
         if gt_uv_weight.sum() == 0:
             if self.training:
                 logger.warning("Assigning a false supervision to avoid DDP deadlock in RLE loss.")
-                return torch.tensor(0.0, device=gt_uv.device, requires_grad=True)
+                return torch.tensor(0.0, device=gt_uv_norm.device, requires_grad=True)
             return None
 
-        # These are the concatenated predictions for both directions
-        pred_offset = data["pred_offset"]
+        # Get predictions for valid samples
+        pred_offset_fine_px = data["pred_offset_fine_px"]
         pred_sigma = data["pred_sigma"]
-        
-        # The GT for RLE is the offset in the local window, normalized
-        gt_offset_norm = gt_uv / self.config['edm']['local_resolution']
-        
-        # The prediction for RLE should also be the normalized offset in the local window
-        pred_offset_norm = pred_offset / self.config['edm']['local_resolution']
 
-        # Select training samples
-        pred_offset_masked = pred_offset_norm[gt_uv_weight]
-        gt_offset_masked = gt_offset_norm[gt_uv_weight]
+        pred_offset_norm = pred_offset_fine_px / self.config['edm']['fine']['fine_patch_size']
+        
+        pred_masked = pred_offset_norm[gt_uv_weight]
+        gt_masked = gt_uv_norm[gt_uv_weight]
         sigma_masked = pred_sigma[gt_uv_weight]
 
-        # The normalizing flow part (assuming flow is part of the fine_matching module)
-        # This part requires access to the flow model, which is tricky from the loss module.
-        # A simple solution is to pre-calculate nf_loss in the fine_matching module.
-        # Here we assume it's pre-calculated and named 'fine_nf_loss'.
-        nf_loss = data['fine_nf_loss'] # This needs to be calculated and added to `data`
-        
-        Q_logprob = self.logQ(gt_offset_masked, pred_offset_masked, sigma_masked)
-        loss = Q_logprob + nf_loss
+        # Get pre-calculated nf_loss for valid samples
+        if 'nf_loss' not in data:
+             raise KeyError("nf_loss was not pre-calculated in the FineMatching module.")
+        nf_loss_masked = data['nf_loss'] # It's already calculated on the masked samples
+
+        # Calculate the first part of the RLE loss
+        Q_logprob = self.logQ(gt_masked, pred_masked, sigma_masked)
+
+        # Combine the two parts
+        loss = Q_logprob + nf_loss_masked
 
         return loss.mean() * f_weight
 
@@ -544,8 +541,8 @@ class EDMLoss(nn.Module):
             loss_scalars.update({"loss_f_bce": loss_f_bce.clone().detach().cpu()})
 
         # 3. cycle consistency (train-only, optional)
-        cycle_log = torch.tensor(0.0)
         if self.cycle_weight > 0:
+            cycle_log = torch.tensor(0.0)
             cycle_loss = self.compute_cycle_loss(data)
             if cycle_loss is not None:
                 loss = loss + self.cycle_weight * cycle_loss
@@ -553,11 +550,11 @@ class EDMLoss(nn.Module):
             loss_scalars.update({"loss_cycle": cycle_log.clone().cpu()})
 
         # 4. epipolar loss-only regularization (does not change forward graph)
-        epi_log = torch.tensor(0.0)
-        gs = int(data.get("global_step", getattr(self, "_internal_step", 0)))
-        warm_ratio = min(1.0, gs / max(1, self.epi_warmup_steps))
-        lambda_epi_now = float(self.lambda_epi) * warm_ratio
         if self.lambda_epi > 0:
+            gs = int(data.get("global_step", getattr(self, "_internal_step", 0)))
+            warm_ratio = min(1.0, gs / max(1, self.epi_warmup_steps))
+            lambda_epi_now = float(self.lambda_epi) * warm_ratio
+            epi_log = torch.tensor(0.0)
             loss_epi_val = self.compute_epi_loss(data)
             if loss_epi_val is not None:
                 loss = loss + lambda_epi_now * loss_epi_val

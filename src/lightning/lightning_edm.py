@@ -183,6 +183,7 @@ class PL_EDM(pl.LightningModule):
                 )
             # figures
             if self.config.TRAINER.ENABLE_PLOTTING:
+                self._filter_and_compute_final_matches(batch)
                 compute_symmetrical_epipolar_errors(
                     batch
                 )  # compute epi_errs for each match
@@ -233,6 +234,8 @@ class PL_EDM(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         self._trainval_inference(batch)
+
+        self._filter_and_compute_final_matches(batch)
 
         ret_dict, _ = self._compute_metrics(batch)
 
@@ -360,6 +363,7 @@ class PL_EDM(pl.LightningModule):
                 torch.cuda.synchronize()
                 self.total_ms += self.start_event.elapsed_time(self.end_event)
 
+        self._filter_and_compute_final_matches(batch)
         ret_dict, rel_pair_names = self._compute_metrics(batch)
 
         if self.dump_dir is not None:
@@ -420,6 +424,61 @@ class PL_EDM(pl.LightningModule):
                 np.save(Path(self.dump_dir) / "EDM_pred_eval", dumps)
 
         self.test_step_outputs.clear()
+
+    @torch.no_grad()
+    def _filter_and_compute_final_matches(self, data):
+        """
+        Applies filters to the raw fine-level predictions to get the final match set.
+        This is necessary for evaluation and plotting.
+        Updates data with 'mkpts0_f', 'mkpts1_f', 'm_bids', and 'mconf'.
+        """
+        # Get predictions from FineMatchingV2
+        pred_offset = data['pred_offset']
+        pred_score = data['pred_score'] # This is 1 - sigma
+        mconf = data['mconf']
+        mkpts0_c = data['mkpts0_c']
+        mkpts1_c = data['mkpts1_c']
+
+        # The predictions are concatenated [0->1, 1->0]
+        offset_01, offset_10 = torch.chunk(pred_offset, 2, dim=0)
+        score_01, score_10 = torch.chunk(pred_score, 2, dim=0)
+
+        # --- Bi-directional Consistency Check ---
+        # Choose the direction with higher confidence (smaller sigma -> higher score)
+        use_01_mask = score_01 > score_10
+        
+        # Final coordinates based on the more confident direction
+        mkpts0_f = torch.where(use_01_mask.unsqueeze(1), mkpts0_c, mkpts0_c + offset_10)
+        mkpts1_f = torch.where(use_01_mask.unsqueeze(1), mkpts1_c + offset_01, mkpts1_c)
+        
+        # Final confidence scores
+        final_score = torch.where(use_01_mask, score_01, score_10)
+        
+        # --- Filtering ---
+        # 1. Coarse-level confidence threshold
+        conf_mask = mconf > self.config['edm']['coarse']['mconf_thr']
+        
+        # 2. Fine-level confidence threshold (from sigma)
+        conf_mask &= final_score > self.config['edm']['fine']['sigma_thr']
+
+        # 3. Border removal
+        border_rm = self.config['edm']['coarse']['border_rm']
+        h0, w0 = data['hw0_i']
+        h1, w1 = data['hw1_i']
+        conf_mask &= (mkpts0_f[:, 0] >= border_rm) & (mkpts0_f[:, 0] < w0 - border_rm) & \
+                      (mkpts0_f[:, 1] >= border_rm) & (mkpts0_f[:, 1] < h0 - border_rm) & \
+                      (mkpts1_f[:, 0] >= border_rm) & (mkpts1_f[:, 0] < w1 - border_rm) & \
+                      (mkpts1_f[:, 1] >= border_rm) & (mkpts1_f[:, 1] < h1 - border_rm)
+
+        # Update data dictionary with the final, filtered matches
+        data.update({
+            'm_bids': data['b_ids'][conf_mask],
+            'mkpts0_f': mkpts0_f[conf_mask],
+            'mkpts1_f': mkpts1_f[conf_mask],
+            'mconf': mconf[conf_mask], # Also filter the coarse confidence
+            'mconf_fine': final_score[conf_mask] # Store the fine confidence
+        })
+
     def on_fit_start(self):
         # Ensure depth extractor is on the same device as the module
         if getattr(self, "_depth_extractor", None) is not None:

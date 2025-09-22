@@ -63,15 +63,20 @@ _CN.EDM.LOSS.POS_WEIGHT = 1.0
 _CN.EDM.LOSS.NEG_WEIGHT = 1.0
 
 
-# -- # fine-level
+# -- # fine-level RLE losses
 _CN.EDM.LOSS.FINE_TYPE = "rle"
 _CN.EDM.LOSS.FINE_WEIGHT = 0.2
 _CN.EDM.LOSS.Q_DISTRIBUTION = "laplace"  # options: ['laplace', 'gaussian']
+
+# -- # fine-level BCE losses
+_CN.EDM.LOSS.FINE.BCE_WEIGHT = 0.5
+_CN.EDM.LOSS.FINE.FINE_PATCH_SIZE = 8
 
 # -- # epiolar loss-only setting
 # Comment out below 2 lines if not used. Default value exists.
 _CN.EDM.LOSS.EPI_WEIGHT = 0.2
 _CN.EDM.LOSS.EPI_TAU = 1.0
+_CN.EDM.LOSS.CYCLE_WEIGHT = 0.2
 
 # Hidden state and Depth control
 _CN.EDM.USE_HIDDEN=False

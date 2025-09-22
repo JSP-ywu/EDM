@@ -399,7 +399,7 @@ class FineMatchingV2(nn.Module):
         self.config = config
         self.block_dims = config["backbone"]["block_dims"]
         self.local_resolution = config["local_resolution"]
-        self.patch_size = config["fine"]["patch_size"]
+        self.fine_patch_size = config["fine"]["fine_patch_size"]
         self.coord_length = config["fine"]["coord_length"]
 
         # --- Network Heads ---
@@ -424,16 +424,19 @@ class FineMatchingV2(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     @staticmethod
-    def _create_patch_grid(M, patch_size, device):
+    def _create_patch_grid(M, fine_patch_size, device):
         grid_y, grid_x = torch.meshgrid(
-            torch.linspace(-1, 1, patch_size, device=device),
-            torch.linspace(-1, 1, patch_size, device=device),
+            torch.linspace(-1, 1, fine_patch_size, device=device),
+            torch.linspace(-1, 1, fine_patch_size, device=device),
             indexing="ij"
         )
         grid = torch.stack([grid_x, grid_y], dim=-1)
         return grid.unsqueeze(0).repeat(M, 1, 1, 1)
 
     def _extract_patches(self, feat_map, coords_c_scaled, b_ids):
+        '''
+        Differentiable patch extraction using F.grid_sample
+        '''
         B, C, H, W = feat_map.shape
         M = coords_c_scaled.shape[0]
         coords_norm = coords_c_scaled.clone()
@@ -441,13 +444,13 @@ class FineMatchingV2(nn.Module):
         coords_norm[:, 1] = (coords_norm[:, 1] / (H - 1)) * 2 - 1
         coords_norm = coords_norm.view(M, 1, 1, 2)
 
-        patch_grid_base = self._create_patch_grid(M, self.patch_size, feat_map.device)
-        patch_grid_base[..., 0] *= (self.patch_size - 1) / 2 / (W - 1)
-        patch_grid_base[..., 1] *= (self.patch_size - 1) / 2 / (H - 1)
+        patch_grid_base = self._create_patch_grid(M, self.fine_patch_size, feat_map.device)
+        patch_grid_base[..., 0] *= (self.fine_patch_size - 1) / 2 / (W - 1)
+        patch_grid_base[..., 1] *= (self.fine_patch_size - 1) / 2 / (H - 1)
         sampling_grid = patch_grid_base + coords_norm
         
         patches = F.grid_sample(feat_map[b_ids], sampling_grid, align_corners=False)
-        return patches
+        return patches # [M, C, fine_patch_size, fine_patch_size]
 
     @staticmethod
     def _soft_argmax_2d(corr_map, temperature=0.1):
@@ -490,7 +493,7 @@ class FineMatchingV2(nn.Module):
 
         sub_pixel_offset = torch.cat([sub_pixel_x, sub_pixel_y], dim=1)
         sigma = torch.cat([x_sigma, y_sigma], dim=1)
-        dynamic_anchor_offset_centered = dynamic_anchor_offset_px - (self.patch_size / 2.0)
+        dynamic_anchor_offset_centered = dynamic_anchor_offset_px - (self.fine_patch_size / 2.0)
         
         # Total offset is the sum of the anchor shift and the sub-pixel refinement
         total_offset_in_patch_pixels = dynamic_anchor_offset_centered + sub_pixel_offset
@@ -511,32 +514,42 @@ class FineMatchingV2(nn.Module):
             mask_patches1 = self._extract_patches(mask_f1.unsqueeze(1).float(), mkpts1_c_s, b_ids)
 
         # --- Run refinement in both directions ---
-        # 0 -> 1 refinement
         offset_01, sigma_01, logits_01 = self._predict_refinement(patches0, patches1, mask_patches0)
-        
-        # 1 -> 0 refinement
         offset_10, sigma_10, logits_10 = self._predict_refinement(patches1, patches0, mask_patches1)
 
         # --- Concatenate results to match supervision format ---
-        # Note: The supervision GT is ordered as [offset01_gt, offset10_gt]
         pred_offset_cat = torch.cat([offset_01, offset_10], dim=0)
         pred_sigma_cat = torch.cat([sigma_01, sigma_10], dim=0)
         pred_logits_cat = torch.cat([logits_01, logits_10], dim=0)
         
-        # --- Update data dictionary for loss module ---
+        # --- ADDED: Calculate nf_loss if in training mode ---
+        if 'target_uv' in data:
+            gt_uv_norm = data["target_uv"]
+            gt_uv_weight = data["target_uv_weight"]
+            
+            # Normalize prediction to match GT's [-0.5, 0.5] scale
+            pred_offset_norm = pred_offset_cat / self.fine_patch_size
+
+            # Select valid samples for loss calculation
+            pred_masked = pred_offset_norm[gt_uv_weight]
+            gt_masked = gt_uv_norm[gt_uv_weight]
+            sigma_masked = pred_sigma_cat[gt_uv_weight]
+
+            # Calculate the Normalizing Flow loss component
+            sigma_masked_clamped = torch.clamp(sigma_masked, 1e-6, 1-1e-6)
+            bar_mu = (pred_masked - gt_masked) / sigma_masked_clamped
+            log_phi = self.flow.log_prob(bar_mu).unsqueeze(-1)
+            
+            # This is the nf_loss for each valid sample
+            nf_loss = torch.log(sigma_masked_clamped) - log_phi
+            data.update({"nf_loss": nf_loss})
+            
+        # --- Update data dictionary for loss module and post-processing ---
         data.update({
-            "pred_offset": pred_offset_cat * self.local_resolution, # Scale to original image pixels
+            "pred_offset_fine_px": pred_offset_cat, 
             "pred_sigma": pred_sigma_cat,
             "fine_match_logits": pred_logits_cat,
-            "pred_score": 1.0 - torch.mean(pred_sigma_cat, dim=-1), # For inference filtering
+            "pred_score": 1.0 - torch.mean(pred_sigma_cat, dim=-1), 
         })
-        
-        # This part will be used by the loss function
-        if 'target_uv' in data:
-            pred_coord_for_loss = torch.cat([
-                mkpts1_c + (offset_01 * self.local_resolution),
-                mkpts0_c + (offset_10 * self.local_resolution)
-            ], dim=0)
-            data.update({"pred_coord_for_loss": pred_coord_for_loss})
             
         return data

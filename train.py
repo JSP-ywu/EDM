@@ -89,6 +89,18 @@ def parse_args():
         default=1.0,
         help="EPI_TAU"
     )
+    parser.add_argument(
+        "--cw",
+        type=float,
+        default=0.2,
+        help="CYCLE_WEIGHT"
+    )
+    parser.add_argument(
+        "--bw",
+        type=float,
+        default=0.5,
+        help="BCE_WEIGHT"
+    )
 
     return parser.parse_args()
 
@@ -111,6 +123,8 @@ def main():
     # Temporal argument for sbatch
     config.EDM.LOSS.EPI_WEIGHT = args.ew
     config.EDM.LOSS.EPI_TAU = args.et
+    config.EDM.LOSS.FINE.BCE_WEIGHT = args.bw
+    config.EDM.LOSS.CYCLE_WEIGHT = args.cw
 
     # scale lr and warmup-step automatically
     args.gpus = _n_gpus = setup_gpus(args.gpus)

@@ -33,6 +33,10 @@ while [[ $# -gt 0 ]]; do
     --et)   et="$2"; shift 2 ;;
     --exp_name=*) exp_name="${1#*=}"; shift ;;
     --exp_name)   exp_name="$2"; shift 2 ;;
+    --cw=*) cw="${1#*=}"; shift ;;
+    --cw)   cw="$2"; shift 2 ;;
+    --bw=*) bw="${1#*=}"; shift ;;
+    --bw)   bw="$2"; shift 2 ;;
     *)      shift ;;  # ignore other args
   esac
 done
@@ -57,5 +61,7 @@ python -u ./train.py \
     --max_epochs=30 \
     --split_data_idx=1 \
     --ew=${ew} \
-    --et=${et}
+    --et=${et} \
+    --cw=${cw} \
+    --bw=${bw}
 
