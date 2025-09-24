@@ -323,7 +323,7 @@ class FineMatching(nn.Module):
         h0, w0 = data["hw0_i"]
         h1, w1 = data["hw1_i"]
         scale0 = data["scale0"][data["b_ids"]] if "scale0" in data else 1.0
-        scale1 = data["scale1"][data["b_ids"]] if "scale1" in data else 1.0
+        scale1 = data["scale1"][data["b_ids"]] if "scale1" in data else 1.0 
         scale0_w = scale0[:, 0] if "scale0" in data else 1.0
         scale0_h = scale0[:, 1] if "scale0" in data else 1.0
         scale1_w = scale1[:, 0] if "scale1" in data else 1.0
@@ -401,6 +401,7 @@ class FineMatchingV2(nn.Module):
         self.local_resolution = config["local_resolution"]
         self.fine_patch_size = config["fine"]["fine_patch_size"]
         self.coord_length = config["fine"]["coord_length"]
+        self.topk = config["coarse"]["topk"]
 
         # --- Network Heads ---
         feature_dim = self.block_dims[-3] # f8_fine has this channel dimension
@@ -424,14 +425,16 @@ class FineMatchingV2(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     @staticmethod
-    def _create_patch_grid(M, fine_patch_size, device):
+    def _create_patch_grid(B, K, patch_size, device):
+        # Create a base grid from -1 to 1 for a single patch
         grid_y, grid_x = torch.meshgrid(
-            torch.linspace(-1, 1, fine_patch_size, device=device),
-            torch.linspace(-1, 1, fine_patch_size, device=device),
+            torch.linspace(-1, 1, patch_size, device=device),
+            torch.linspace(-1, 1, patch_size, device=device),
             indexing="ij"
         )
+        # Reshape to [1, 1, patch_size, patch_size, 2] for broadcasting
         grid = torch.stack([grid_x, grid_y], dim=-1)
-        return grid.unsqueeze(0).repeat(M, 1, 1, 1)
+        return grid.unsqueeze(0).unsqueeze(0).repeat(B, K, 1, 1, 1)
 
     # def _extract_patches(self, feat_map, coords_c_scaled, b_ids):
     #     '''
@@ -452,24 +455,49 @@ class FineMatchingV2(nn.Module):
     #     patches = F.grid_sample(feat_map[b_ids], sampling_grid, align_corners=False)
     #     return patches # [M, C, fine_patch_size, fine_patch_size]
 
-    def _extract_patches(self, feat_map, coords_c_scaled, b_ids):
-        # This function receives a single feature map
-        B, C, H, W = feat_map.shape # B is now always 1
-        M = coords_c_scaled.shape[0]
+    def _extract_patches_vectorized(self, feat_map, coords_c_s_reshaped):
+        """
+        Fully vectorized and memory-efficient patch extraction using a reshape trick.
+        feat_map: [B, C, H, W]
+        coords_c_s_reshaped: [B, K, 2] where K is topk
+        """
+        B, C, H, W = feat_map.shape
+        K = coords_c_s_reshaped.shape[1]
+        P = self.fine_patch_size
 
-        coords_norm = coords_c_scaled.clone()
-        coords_norm[:, 0] = (coords_norm[:, 0] / (W - 1)) * 2 - 1
-        coords_norm[:, 1] = (coords_norm[:, 1] / (H - 1)) * 2 - 1
-        coords_norm = coords_norm.view(M, 1, 1, 2)
+        # Normalize coarse coordinates to [-1, 1] range for grid_sample
+        coords_norm = coords_c_s_reshaped.clone()
+        coords_norm[..., 0] = (coords_norm[..., 0] / (W - 1)) * 2 - 1
+        coords_norm[..., 1] = (coords_norm[..., 1] / (H - 1)) * 2 - 1
+        # Reshape for broadcasting: [B, K, 1, 1, 2]
+        coords_norm = coords_norm.unsqueeze(-2).unsqueeze(-2)
 
-        patch_grid_base = self._create_patch_grid(M, self.fine_patch_size, feat_map.device)
-        patch_grid_base[..., 0] *= (self.fine_patch_size - 1) / 2 / (W - 1)
-        patch_grid_base[..., 1] *= (self.fine_patch_size - 1) / 2 / (H - 1)
-        sampling_grid = patch_grid_base + coords_norm
+        # Create a base grid for sampling inside a patch
+        patch_grid_base = self._create_patch_grid(B, K, P, feat_map.device)
+        # Scale the grid to match the feature map's coordinate system
+        patch_grid_base[..., 0] *= (P - 1) / 2 / (W - 1)
+        patch_grid_base[..., 1] *= (P - 1) / 2 / (H - 1)
         
-        # We repeat the single feature map M times to match the grid shape
-        patches = F.grid_sample(feat_map.repeat(M, 1, 1, 1), sampling_grid, align_corners=False)
-        return patches
+        # Create the final sampling grid by offsetting the base grid
+        # Shape: [B, K, P, P, 2]
+        sampling_grid = patch_grid_base + coords_norm
+
+        # --- THE RESHAPE TRICK ---
+        # Reshape the grid to trick grid_sample into processing K patches as one long strip
+        # [B, K, P, P, 2] -> [B, K * P, P, 2]
+        sampling_grid_reshaped = sampling_grid.view(B, K * P, P, 2)
+        
+        # Perform the grid_sample operation. No OOM, no loops.
+        patches_reshaped = F.grid_sample(feat_map, sampling_grid_reshaped, align_corners=False)
+        # Output shape: [B, C, K * P, P]
+        
+        # Reshape the output back to the desired patch format
+        # [B, C, K * P, P] -> [B, C, K, P, P]
+        patches = patches_reshaped.view(B, C, K, P, P)
+        
+        # Finally, flatten the batch and K dimensions to get [B*K, C, P, P]
+        # [B, C, K, P, P] -> [B, K, C, P, P] -> [M, C, P, P]
+        return patches.permute(0, 2, 1, 3, 4).reshape(B * K, C, P, P)
 
     @staticmethod
     def _soft_argmax_2d(corr_map, temperature=0.1):
@@ -520,49 +548,35 @@ class FineMatchingV2(nn.Module):
         return total_offset_in_patch_pixels, sigma, logits
 
     def forward(self, feat_f0, feat_f1, data, mask_f0=None, mask_f1=None):
-        # Get coarse match info from the data dictionary
-        b_ids, i_ids, j_ids = data['b_ids'], data['i_ids'], data['j_ids']
-        mkpts0_c, mkpts1_c = data['mkpts0_c'], data['mkpts1_c']
+        b_ids, mkpts0_c, mkpts1_c = data['b_ids'], data['mkpts0_c'], data['mkpts1_c']
         bs = data['bs']
+        K = self.topk
 
-        # Scale coarse coordinates to the fine feature map's resolution
-        mkpts0_c_s = mkpts0_c / self.local_resolution
-        mkpts1_c_s = mkpts1_c / self.local_resolution
+        # Reshape coarse coordinates from [B*K, 2] to [B, K, 2]
+        mkpts0_c_reshaped = mkpts0_c.view(bs, K, 2)
+        mkpts1_c_reshaped = mkpts1_c.view(bs, K, 2)
 
-        # Lists to store results from each item in the batch
-        all_offsets, all_sigmas, all_logits = [], [], []
+        # Scale coordinates to the fine feature map's resolution
+        mkpts0_c_s = mkpts0_c_reshaped / self.local_resolution
+        mkpts1_c_s = mkpts1_c_reshaped / self.local_resolution
+        
+        # --- 1. Extract local patches efficiently (vectorized) ---
+        patches0 = self._extract_patches_vectorized(feat_f0, mkpts0_c_s)
+        patches1 = self._extract_patches_vectorized(feat_f1, mkpts1_c_s)
 
-        # Iterate over each image pair in the batch
-        for b in range(bs):
-            # Select matches belonging to the current batch item
-            batch_mask = (b_ids == b)
-            if not batch_mask.any():
-                continue
-
-            # --- 1. Extract local patches for the current batch item ---
-            # The input feature map is now [1, C, H, W], which is small
-            # The number of matches per item is K (topk)
-            patches0 = self._extract_patches(feat_f0[b:b+1], mkpts0_c_s[batch_mask], b_ids=None) # b_ids not needed here
-            patches1 = self._extract_patches(feat_f1[b:b+1], mkpts1_c_s[batch_mask], b_ids=None)
-            
-            mask_patches0, mask_patches1 = None, None
-            if mask_f0 is not None:
-                mask_patches0 = self._extract_patches(mask_f0[b:b+1].unsqueeze(1).float(), mkpts0_c_s[batch_mask], b_ids=None)
-                mask_patches1 = self._extract_patches(mask_f1[b:b+1].unsqueeze(1).float(), mkpts1_c_s[batch_mask], b_ids=None)
-
-            # --- 2. Run refinement in both directions for the current batch item ---
-            offset_01, sigma_01, logits_01 = self._predict_refinement(patches0, patches1, mask_patches0)
-            offset_10, sigma_10, logits_10 = self._predict_refinement(patches1, patches0, mask_patches1)
-
-            # Append results to the lists
-            all_offsets.append(torch.cat([offset_01, offset_10], dim=0))
-            all_sigmas.append(torch.cat([sigma_01, sigma_10], dim=0))
-            all_logits.append(torch.cat([logits_01, logits_10], dim=0))
+        mask_patches0, mask_patches1 = None, None
+        if mask_f0 is not None:
+             mask_patches0 = self._extract_patches_vectorized(mask_f0.unsqueeze(1).float(), mkpts0_c_s)
+             mask_patches1 = self._extract_patches_vectorized(mask_f1.unsqueeze(1).float(), mkpts1_c_s)
+        
+        # --- 2. Run refinement in both directions ---
+        offset_01, sigma_01, logits_01 = self._predict_refinement(patches0, patches1, mask_patches0)
+        offset_10, sigma_10, logits_10 = self._predict_refinement(patches1, patches0, mask_patches1)
 
         # --- Concatenate results from all batch items ---
-        pred_offset_cat = torch.cat(all_offsets, dim=0)
-        pred_sigma_cat = torch.cat(all_sigmas, dim=0)
-        pred_logits_cat = torch.cat(all_logits, dim=0)
+        pred_offset_cat = torch.cat([offset_01, offset_10], dim=0)
+        pred_sigma_cat = torch.cat([sigma_01, sigma_10], dim=0)
+        pred_logits_cat = torch.cat([logits_01, logits_10], dim=0)
 
         # --- Calculate nf_loss if in training mode ---
         if 'target_uv' in data:

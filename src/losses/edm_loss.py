@@ -167,62 +167,62 @@ class EDMLoss(nn.Module):
         return loss_q
 
     def compute_rle_loss(self, data, f_weight=1):
-        # gt_uv = data["target_uv"]
-        # gt_uv_weight = data["target_uv_weight"]
-
-        # if gt_uv_weight.sum() == 0:
-        #     if (
-        #         self.training
-        #     ):  # this seldomly happen when training, since we pad prediction with gt
-        #         logger.warning(
-        #             "assign a false supervision to avoid ddp deadlock")
-        #         gt_uv_weight[0] = True
-        #         f_weight = 0.0
-        #     else:
-        #         return None
-
-        # residual = True
-        # if residual:
-        #     Q_logprob = self.logQ(
-        #         gt_uv[gt_uv_weight], data["mask_coord"], data["mask_sigma"]
-        #     )
-        #     loss = Q_logprob + data["nf_loss"]
-
-        # return loss.mean() * f_weight
-        """
-        Computes the RLE loss based on pre-calculated outputs from FineMatchingV2.
-        """
-        gt_uv_norm = data["target_uv"]
+        gt_uv = data["target_uv"]
         gt_uv_weight = data["target_uv_weight"]
-        
+
         if gt_uv_weight.sum() == 0:
-            if self.training:
-                logger.warning("Assigning a false supervision to avoid DDP deadlock in RLE loss.")
-                return torch.tensor(0.0, device=gt_uv_norm.device, requires_grad=True)
-            return None
+            if (
+                self.training
+            ):  # this seldomly happen when training, since we pad prediction with gt
+                logger.warning(
+                    "assign a false supervision to avoid ddp deadlock")
+                gt_uv_weight[0] = True
+                f_weight = 0.0
+            else:
+                return None
 
-        # Get predictions for valid samples
-        pred_offset_fine_px = data["pred_offset_fine_px"]
-        pred_sigma = data["pred_sigma"]
-
-        pred_offset_norm = pred_offset_fine_px / self.config['edm']['fine']['fine_patch_size']
-        
-        pred_masked = pred_offset_norm[gt_uv_weight]
-        gt_masked = gt_uv_norm[gt_uv_weight]
-        sigma_masked = pred_sigma[gt_uv_weight]
-
-        # Get pre-calculated nf_loss for valid samples
-        if 'nf_loss' not in data:
-             raise KeyError("nf_loss was not pre-calculated in the FineMatching module.")
-        nf_loss_masked = data['nf_loss'] # It's already calculated on the masked samples
-
-        # Calculate the first part of the RLE loss
-        Q_logprob = self.logQ(gt_masked, pred_masked, sigma_masked)
-
-        # Combine the two parts
-        loss = Q_logprob + nf_loss_masked
+        residual = True
+        if residual:
+            Q_logprob = self.logQ(
+                gt_uv[gt_uv_weight], data["mask_coord"], data["mask_sigma"]
+            )
+            loss = Q_logprob + data["nf_loss"]
 
         return loss.mean() * f_weight
+        # """
+        # Computes the RLE loss based on pre-calculated outputs from FineMatchingV2.
+        # """
+        # gt_uv_norm = data["target_uv"]
+        # gt_uv_weight = data["target_uv_weight"]
+        
+        # if gt_uv_weight.sum() == 0:
+        #     if self.training:
+        #         logger.warning("Assigning a false supervision to avoid DDP deadlock in RLE loss.")
+        #         return torch.tensor(0.0, device=gt_uv_norm.device, requires_grad=True)
+        #     return None
+
+        # # Get predictions for valid samples
+        # pred_offset_fine_px = data["pred_offset_fine_px"]
+        # pred_sigma = data["pred_sigma"]
+
+        # pred_offset_norm = pred_offset_fine_px / self.config['edm']['fine']['fine_patch_size']
+        
+        # pred_masked = pred_offset_norm[gt_uv_weight]
+        # gt_masked = gt_uv_norm[gt_uv_weight]
+        # sigma_masked = pred_sigma[gt_uv_weight]
+
+        # # Get pre-calculated nf_loss for valid samples
+        # if 'nf_loss' not in data:
+        #      raise KeyError("nf_loss was not pre-calculated in the FineMatching module.")
+        # nf_loss_masked = data['nf_loss'] # It's already calculated on the masked samples
+
+        # # Calculate the first part of the RLE loss
+        # Q_logprob = self.logQ(gt_masked, pred_masked, sigma_masked)
+
+        # # Combine the two parts
+        # loss = Q_logprob + nf_loss_masked
+
+        # return loss.mean() * f_weight
 
     # ADDED: New function for BCE loss
     def compute_bce_loss(self, data, f_weight=1.0):
@@ -512,33 +512,33 @@ class EDMLoss(nn.Module):
         loss = loss_c * self.loss_config["coarse_weight"]
         loss_scalars.update({"loss_c": loss_c.clone().detach().cpu()})
 
-        # # 2. fine-level loss
-        # loss_f = self.compute_rle_loss(
-        #     data=data,
-        #     f_weight=self.loss_config["fine_weight"],
-        # )
-        # if loss_f is not None:
-        #     loss += loss_f
-        #     loss_scalars.update(
-        #         {"loss_f": min(loss_f.clone().detach().cpu(),
-        #                        torch.tensor(1.0))}
-        #     )
-        # else:
-        #     assert self.training is False
-        #     # 1 is the upper bound
-        #     loss_scalars.update({"loss_f": torch.tensor(1.0)})
+        # 2. fine-level loss
+        loss_f = self.compute_rle_loss(
+            data=data,
+            f_weight=self.loss_config["fine_weight"],
+        )
+        if loss_f is not None:
+            loss += loss_f
+            loss_scalars.update(
+                {"loss_f": min(loss_f.clone().detach().cpu(),
+                               torch.tensor(1.0))}
+            )
+        else:
+            assert self.training is False
+            # 1 is the upper bound
+            loss_scalars.update({"loss_f": torch.tensor(1.0)})
             
-        # 2. fine-level loss (RLE) - MODIFIED
-        loss_f_rle = self.compute_rle_loss(data, self.loss_config["fine_weight"])
-        if loss_f_rle is not None:
-            loss += loss_f_rle
-            loss_scalars.update({"loss_f_rle": loss_f_rle.clone().detach().cpu()})
+        # # 2. fine-level loss (RLE) - MODIFIED
+        # loss_f_rle = self.compute_rle_loss(data, self.loss_config["fine_weight"])
+        # if loss_f_rle is not None:
+        #     loss += loss_f_rle
+        #     loss_scalars.update({"loss_f_rle": loss_f_rle.clone().detach().cpu()})
 
-        # 3. fine-level loss (BCE) - ADDED
-        loss_f_bce = self.compute_bce_loss(data, self.bce_weight)
-        if loss_f_bce is not None:
-            loss += loss_f_bce
-            loss_scalars.update({"loss_f_bce": loss_f_bce.clone().detach().cpu()})
+        # # 3. fine-level loss (BCE) - ADDED
+        # loss_f_bce = self.compute_bce_loss(data, self.bce_weight)
+        # if loss_f_bce is not None:
+        #     loss += loss_f_bce
+        #     loss_scalars.update({"loss_f_bce": loss_f_bce.clone().detach().cpu()})
 
         # 3. cycle consistency (train-only, optional)
         if self.cycle_weight > 0:
