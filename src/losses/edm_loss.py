@@ -69,7 +69,7 @@ class EDMLoss(nn.Module):
         # EPI robustification defaults
         self.epi_min_parallax_deg = float(self.loss_config.get("epi_min_parallax_deg", 0.5))
         self.epi_gate_mult = float(self.loss_config.get("epi_gate_mult", 5.0))
-        self.cycle_weight = float(self.loss_config.get("cycle_weight", 0.2))
+        self.cycle_weight = float(self.loss_config.get("cycle_weight", 0.0))
 
         self.epi_warmup_steps = int(self.loss_config.get("epi_warmup_steps", 6900))
         self.epi_full_steps   = int(self.loss_config.get("epi_full_steps", 69000))
@@ -165,7 +165,7 @@ class EDMLoss(nn.Module):
             loss_q = torch.log(sigma * math.sqrt(2 * math.pi)) + 0.5 * error**2
 
         return loss_q
-
+    # Original rle loss
     def compute_rle_loss(self, data, f_weight=1):
         gt_uv = data["target_uv"]
         gt_uv_weight = data["target_uv_weight"]
@@ -189,6 +189,7 @@ class EDMLoss(nn.Module):
             loss = Q_logprob + data["nf_loss"]
 
         return loss.mean() * f_weight
+    
         # """
         # Computes the RLE loss based on pre-calculated outputs from FineMatchingV2.
         # """

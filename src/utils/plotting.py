@@ -135,27 +135,43 @@ def _make_confidence_figure(data, b_id):
     # TODO: Implement confidence figure
     raise NotImplementedError()
 
+# ----- Original matching figures
+# def make_matching_figures(data, config, mode="evaluation"):
+#     """Make matching figures for a batch.
 
-def make_matching_figures(data, config, mode="evaluation"):
-    """Make matching figures for a batch.
+#     Args:
+#         data (Dict): a batch updated by PL_LoFTR.
+#         config (Dict): matcher config
+#     Returns:
+#         figures (Dict[str, List[plt.figure]]
+#     """
+#     assert mode in ["evaluation", "confidence", "gt"]  # 'confidence'
+#     figures = {mode: []}
+#     for b_id in range(data["image0"].size(0)):
+#         if mode == "evaluation":
+#             fig = _make_evaluation_figure(
+#                 data, b_id, alpha=config.TRAINER.PLOT_MATCHES_ALPHA
+#             )
+#         elif mode == "confidence":
+#             fig = _make_confidence_figure(data, b_id)
+#         else:
+#             raise ValueError(f"Unknown plot mode: {mode}")
+#         figures[mode].append(fig)
+#     return figures
 
-    Args:
-        data (Dict): a batch updated by PL_LoFTR.
-        config (Dict): matcher config
-    Returns:
-        figures (Dict[str, List[plt.figure]]
-    """
-    assert mode in ["evaluation", "confidence", "failure","gt"]  # 'confidence'
+def make_matching_figures(data, config, mode="evaluation", **kwargs):
+    """Make matching figures for a batch."""
+    assert mode in ["evaluation", "confidence", "rejected", "failure"]
     figures = {mode: []}
     for b_id in range(data["image0"].size(0)):
         if mode == "evaluation":
-            fig = _make_evaluation_figure(
-                data, b_id, alpha=config.TRAINER.PLOT_MATCHES_ALPHA
-            )
-        elif mode == "confidence":
-            fig = _make_confidence_figure(data, b_id)
-        else:
-            raise ValueError(f"Unknown plot mode: {mode}")
+            # This requires 'm_bids', 'mkpts0_f', etc. to be in data
+            fig = _make_evaluation_figure(data, b_id, alpha=config.TRAINER.PLOT_MATCHES_ALPHA)
+        elif mode == "rejected":
+            fig = _make_rejected_figure(data, b_id, **kwargs)
+        elif mode == "failure":
+            fig = _make_failure_figure(data, b_id, **kwargs)
+        # ...
         figures[mode].append(fig)
     return figures
 
@@ -184,3 +200,32 @@ def error_colormap(err, thr, alpha=1.0):
         0,
         1,
     )
+
+def _make_rejected_figure(data, b_id, mkpts0, mkpts1, mask):
+    # This function now receives the points and mask directly
+    kpts0_rejected = mkpts0[mask]
+    kpts1_rejected = mkpts1[mask]
+
+    img0 = (data["image0"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    img1 = (data["image1"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+
+    color = np.array([[1, 0, 0, 0.7]] * len(kpts0_rejected)) # Solid Red
+    text = [f"# Fine-level Rejections: {len(kpts0_rejected)}"]
+
+    return make_matching_figure(img0, img1, kpts0_rejected, kpts1_rejected, color, text=text)
+
+def _make_failure_figure(data, b_id, mkpts0, mkpts1, epi_errs):
+    conf_thr = _compute_conf_thresh(data)
+    
+    # Select only the failures (epipolar error > threshold)
+    failure_mask = epi_errs >= conf_thr
+    kpts0_fail = mkpts0[failure_mask]
+    kpts1_fail = mkpts1[failure_mask]
+
+    img0 = (data["image0"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    img1 = (data["image1"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    
+    color = np.array([[1, 0, 0, 0.7]] * len(kpts0_fail)) # Solid Red
+    text = [f"# Failure Cases (FP): {len(kpts0_fail)}"]
+
+    return make_matching_figure(img0, img1, kpts0_fail, kpts1_fail, color, text=text)

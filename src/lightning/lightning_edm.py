@@ -235,7 +235,7 @@ class PL_EDM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         self._trainval_inference(batch)
 
-        self._filter_and_compute_final_matches(batch)
+        # self._filter_and_compute_final_matches(batch)
 
         ret_dict, _ = self._compute_metrics(batch)
 
@@ -332,7 +332,6 @@ class PL_EDM(pl.LightningModule):
             )  # ckpt monitors on this
         self.validation_step_outputs.clear()
 
-
     def test_step(self, batch, batch_idx):
         if self.config.EDM.HALF:
             self.matcher = self.matcher.eval().half()
@@ -363,10 +362,28 @@ class PL_EDM(pl.LightningModule):
                 torch.cuda.synchronize()
                 self.total_ms += self.start_event.elapsed_time(self.end_event)
 
-        self._filter_and_compute_final_matches(batch)
-        ret_dict, rel_pair_names = self._compute_metrics(batch)
+        # --- Analysis Data Preparation ---
+        # 1. Store initial top-k coarse matches before filtering
+        initial_mkpts0_c = batch['mkpts0_c'].clone()
+        initial_mkpts1_c = batch['mkpts1_c'].clone()
+        initial_b_ids = batch['b_ids'].clone()
+        initial_i_ids = batch['i_ids'].clone()
+        initial_j_ids = batch['j_ids'].clone()
+
+        # 2. Compute final matches and get the filter mask
+        final_keep_mask = self._post_process_and_filter(batch)
+
+        # 3. Compute metrics on the FINAL filtered matches
+        ret_dict, rel_pair_names = self._compute_metrics(batch) # This now uses the filtered matches
+
+        # 4. Calculate Coarse Precision using INITIAL matches
+        conf_matrix_gt = batch['conf_matrix_gt']
+        gt_vals = conf_matrix_gt[initial_b_ids, initial_i_ids, initial_j_ids]
+        coarse_precision = gt_vals.mean() if len(gt_vals) > 0 else 0.
+        ret_dict['metrics']['coarse_precision'] = [coarse_precision.cpu().numpy()]
 
         if self.dump_dir is not None:
+            compute_symmetrical_epipolar_errors(batch)
             with self.profiler.profile("dump_results"):
                 # dump results for further analysis
                 keys_to_save = {"mkpts0_f", "mkpts1_f", "mconf", "epi_errs"}
@@ -382,11 +399,78 @@ class PL_EDM(pl.LightningModule):
                         item[key] = batch[key][mask].cpu().numpy()
                     for key in ["R_errs", "t_errs", "inliers"]:
                         item[key] = batch[key][b_id]
+
+                    initial_b_mask = initial_b_ids == b_id
+                    final_b_mask = batch['m_bids'] == b_id # m_bids is now filtered
+
+                    item['initial_mkpts0_c'] = initial_mkpts0_c[initial_b_mask].cpu().numpy()
+                    item['initial_mkpts1_c'] = initial_mkpts1_c[initial_b_mask].cpu().numpy()
+                    item['rejected_mask'] = ~final_keep_mask[initial_b_mask].cpu().numpy()
+                    
+                    item['final_mkpts0_f'] = batch['mkpts0_f'][final_b_mask].cpu().numpy()
+                    item['final_mkpts1_f'] = batch['mkpts1_f'][final_b_mask].cpu().numpy()
+                    item['final_epi_errs'] = batch['epi_errs'][final_b_mask].cpu().numpy()
                     dumps.append(item)
                 ret_dict["dumps"] = dumps
 
         self.test_step_outputs.append(ret_dict)
         return ret_dict
+
+    # ------- Original test_step
+    # def test_step(self, batch, batch_idx):
+    #     if self.config.EDM.HALF:
+    #         self.matcher = self.matcher.eval().half()
+
+    #     # Following EfficientLoFTR
+    #     if not self.warmup:
+    #         if self.config.EDM.HALF:
+    #             for i in range(50):
+    #                 batch = self.matcher(batch)
+    #         else:
+    #             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
+    #                 for i in range(50):
+    #                     batch = self.matcher(batch)
+    #         self.warmup = True
+
+    #     torch.cuda.synchronize()
+    #     if self.config.EDM.HALF:
+    #         self.start_event.record()
+    #         batch = self.matcher(batch)
+    #         self.end_event.record()
+    #         torch.cuda.synchronize()
+    #         self.total_ms += self.start_event.elapsed_time(self.end_event)
+    #     else:
+    #         with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
+    #             self.start_event.record()
+    #             batch = self.matcher(batch)
+    #             self.end_event.record()
+    #             torch.cuda.synchronize()
+    #             self.total_ms += self.start_event.elapsed_time(self.end_event)
+
+    #     self._filter_and_compute_final_matches(batch)
+    #     ret_dict, rel_pair_names = self._compute_metrics(batch)
+
+    #     if self.dump_dir is not None:
+    #         with self.profiler.profile("dump_results"):
+    #             # dump results for further analysis
+    #             keys_to_save = {"mkpts0_f", "mkpts1_f", "mconf", "epi_errs"}
+    #             pair_names = list(zip(*batch["pair_names"]))
+    #             bs = batch["image0"].shape[0]
+    #             dumps = []
+    #             for b_id in range(bs):
+    #                 item = {}
+    #                 mask = batch["m_bids"] == b_id
+    #                 item["pair_names"] = pair_names[b_id]
+    #                 item["identifier"] = "#".join(rel_pair_names[b_id])
+    #                 for key in keys_to_save:
+    #                     item[key] = batch[key][mask].cpu().numpy()
+    #                 for key in ["R_errs", "t_errs", "inliers"]:
+    #                     item[key] = batch[key][b_id]
+    #                 dumps.append(item)
+    #             ret_dict["dumps"] = dumps
+
+    #     self.test_step_outputs.append(ret_dict)
+    #     return ret_dict
 
     def on_test_epoch_end(self):
         outputs = self.test_step_outputs
@@ -413,89 +497,210 @@ class PL_EDM(pl.LightningModule):
             val_metrics_4tb = aggregate_metrics(
                 metrics, self.config.TRAINER.EPI_ERR_THR, config=self.config
             )
+            if 'coarse_precision' in metrics:
+                val_metrics_4tb['coarse_precision'] = np.mean(metrics['coarse_precision'])
 
             logger.info("\n" + pprint.pformat(val_metrics_4tb))
+            
             print(
                 "Averaged Matching time over 1500 pairs: {:.2f} ms".format(
                     self.total_ms / 1500
                 )
             )
             if self.dump_dir is not None:
+                for i in range(min(self.n_vals_plot, len(dumps))):
+                    dump_item = dumps[i]
+                    batch_for_plot = {
+                        'image0': torch.from_numpy(dump_item['image0']), # Assuming you save images in dump
+                        'image1': torch.from_numpy(dump_item['image1']),
+                        'dataset_name': [self.config.DATASET.TEST_DATASET]
+                    }
+                    
+                    # Plot rejected matches
+                    fig_rejected = make_matching_figures(
+                        batch_for_plot, self.config, mode='rejected',
+                        mkpts0=dump_item['initial_mkpts0_c'],
+                        mkpts1=dump_item['initial_mkpts1_c'],
+                        mask=dump_item['rejected_mask']
+                    )
+                    self.logger.experiment.log(
+                        {f"test_analysis/rejected/pair-{i}": fig_rejected['rejected'][0]},
+                        step=self.global_step
+                    )
+
+                    # Plot failure cases
+                    fig_failure = make_matching_figures(
+                        batch_for_plot, self.config, mode='failure',
+                        mkpts0=dump_item['final_mkpts0_f'],
+                        mkpts1=dump_item['final_mkpts1_f'],
+                        epi_errs=dump_item['final_epi_errs']
+                    )
+                    self.logger.experiment.log(
+                        {f"test_analysis/failure/pair-{i}": fig_failure['failure'][0]},
+                        step=self.global_step
+                    )
                 np.save(Path(self.dump_dir) / "EDM_pred_eval", dumps)
 
         self.test_step_outputs.clear()
+    
+    # ----------- Original on_test_epoch_end
+    # def on_test_epoch_end(self):
+    #     outputs = self.test_step_outputs
+    #     # metrics: dict of list, numpy
+    #     _metrics = [o["metrics"] for o in outputs]
 
+    #     metrics = {
+    #         k: flattenList(gather(flattenList([_me[k] for _me in _metrics])))
+    #         for k in _metrics[0]
+    #     }
+
+    #     # dump
+    #     if self.dump_dir is not None:
+    #         Path(self.dump_dir).mkdir(parents=True, exist_ok=True)
+    #         _dumps = flattenList([o["dumps"]
+    #                              for o in outputs])  # [{...}, #bs*#batch]
+    #         dumps = flattenList(gather(_dumps))  # [{...}, #proc*#bs*#batch]
+    #         logger.info(
+    #             f"Prediction and evaluation results will be saved to: {self.dump_dir}"
+    #         )
+
+    #     # [{key: [{...}, *#bs]}, *#batch]
+    #     if self.trainer.global_rank == 0:
+    #         val_metrics_4tb = aggregate_metrics(
+    #             metrics, self.config.TRAINER.EPI_ERR_THR, config=self.config
+    #         )
+
+    #         logger.info("\n" + pprint.pformat(val_metrics_4tb))
+    #         print(
+    #             "Averaged Matching time over 1500 pairs: {:.2f} ms".format(
+    #                 self.total_ms / 1500
+    #             )
+    #         )
+    #         if self.dump_dir is not None:
+    #             np.save(Path(self.dump_dir) / "EDM_pred_eval", dumps)
+
+    #     self.test_step_outputs.clear()
+
+    # For debugging
     @torch.no_grad()
-    def _filter_and_compute_final_matches(self, data):
+    def _post_process_and_filter(self, data):
         """
-        Applies filters to the raw fine-level predictions to get the final match set.
-        This version correctly handles the symmetrical bi-directional predictions.
+        Takes raw model predictions from the data dict and computes the final,
+        filtered matches. This logic is moved from the original FineMatching module.
         """
-        # Get raw predictions from the data dictionary
-        pred_offset_px = data['pred_offset_fine_px'] * self.matcher.local_resolution
-        pred_score = data['pred_score'] # This is 1 - sigma
+        # Get raw predictions
+        pred_coord = data['pred_coord']
         mconf = data['mconf']
-        mkpts0_c = data['mkpts0_c']
-        mkpts1_c = data['mkpts1_c']
-
-        # The predictions are concatenated [0->1, 1->0]
-        offset_01, offset_10 = torch.chunk(pred_offset_px, 2, dim=0)
-        score_01, score_10 = torch.chunk(pred_score, 2, dim=0)
-
-        # --- Symmetrical Bi-directional Check ---
-        mkpts0_f_from_10 = mkpts0_c + offset_10 # Refined point in 0, from 1's perspective
-        mkpts1_f_from_10 = mkpts1_c            # Anchor in 1 (coarse center)
-
-        mkpts0_f_from_01 = mkpts0_c            # Anchor in 0 (coarse center)
-        mkpts1_f_from_01 = mkpts1_c + offset_01 # Refined point in 1, from 0's perspective
-
-        # Choose the entire coordinate pair based on the more confident direction
-        use_01_mask = score_01 > score_10
-        mkpts0_f = torch.where(use_01_mask.unsqueeze(1), mkpts0_f_from_01, mkpts0_f_from_10)
-        mkpts1_f = torch.where(use_01_mask.unsqueeze(1), mkpts1_f_from_01, mkpts1_f_from_10)
         
-        # Final confidence scores
-        final_score = torch.where(use_01_mask, score_01, score_10)
+        # De-normalize offset to pixel scale
+        offset = pred_coord * self.matcher.local_resolution
         
+        if self.config['edm']['fine']['bi_directional_refine']:
+            offset_01, offset_10 = torch.chunk(offset, 2, dim=0)
+            score_01, score_10 = torch.chunk(data['pred_score'], 2, dim=0)
+
+            # --- Bi-directional Consistency Check ---
+            use_01_mask = score_01 > score_10
+            mkpts0_f = torch.where(use_01_mask.unsqueeze(1), data['mkpts0_c'], data['mkpts0_c'] + offset_10)
+            mkpts1_f = torch.where(use_01_mask.unsqueeze(1), data['mkpts1_c'] + offset_01, data['mkpts1_c'])
+            final_score = torch.where(use_01_mask, score_01, score_10)
+        else:
+            mkpts0_f = data['mkpts0_c']
+            mkpts1_f = data['mkpts1_c'] + offset
+            final_score = data['pred_score']
+
         # --- Filtering ---
-        # 1. Coarse-level confidence threshold
-        conf_mask = mconf > self.config['edm']['coarse']['mconf_thr']
-        
-        # 2. Fine-level confidence threshold (from sigma)
-        conf_mask &= final_score > self.config['edm']['fine']['sigma_thr']
+        final_mask = mconf > self.config['edm']['coarse']['mconf_thr']
+        final_mask &= final_score > self.config['edm']['fine']['sigma_thr']
 
-        # 3. Border removal
         border_rm = self.config['edm']['coarse']['border_rm']
         h0, w0 = data['hw0_i']
         h1, w1 = data['hw1_i']
-        conf_mask &= (mkpts0_f[:, 0] >= border_rm) & (mkpts0_f[:, 0] < w0 - border_rm) & \
+        final_mask &= (mkpts0_f[:, 0] >= border_rm) & (mkpts0_f[:, 0] < w0 - border_rm) & \
                       (mkpts0_f[:, 1] >= border_rm) & (mkpts0_f[:, 1] < h0 - border_rm) & \
                       (mkpts1_f[:, 0] >= border_rm) & (mkpts1_f[:, 0] < w1 - border_rm) & \
                       (mkpts1_f[:, 1] >= border_rm) & (mkpts1_f[:, 1] < h1 - border_rm)
 
         # Update data dictionary with the final, filtered matches
         data.update({
-            'm_bids': data['b_ids'][conf_mask],
-            'mkpts0_f': mkpts0_f[conf_mask],
-            'mkpts1_f': mkpts1_f[conf_mask],
-            'mconf': mconf[conf_mask],
-            'mconf_fine': final_score[conf_mask]
+            'm_bids': data['b_ids'][final_mask],
+            'mkpts0_f': mkpts0_f[final_mask],
+            'mkpts1_f': mkpts1_f[final_mask],
+            'mconf': mconf[final_mask]
         })
+        
+        return final_mask
+    # @torch.no_grad()
+    # def _filter_and_compute_final_matches(self, data):
+    #     """
+    #     Applies filters to the raw fine-level predictions to get the final match set.
+    #     This version correctly handles the symmetrical bi-directional predictions.
+    #     """
+    #     # Get raw predictions from the data dictionary
+    #     pred_offset_px = data['pred_offset_fine_px'] * self.matcher.local_resolution
+    #     pred_score = data['pred_score'] # This is 1 - sigma
+    #     mconf = data['mconf']
+    #     mkpts0_c = data['mkpts0_c']
+    #     mkpts1_c = data['mkpts1_c']
 
-    def on_fit_start(self):
-        # Ensure depth extractor is on the same device as the module
-        if getattr(self, "_depth_extractor", None) is not None:
-            try:
-                self._depth_extractor.to(self.device)
-            except Exception as e:
-                print(f"[on_fit_start] failed to move depth extractor to {self.device}: {e}")
-        try:
-            ws = getattr(self.trainer, "world_size", None)
-            nd = getattr(self.trainer, "num_nodes", None)
-            ndv = getattr(self.trainer, "num_devices", None)
-            print(f"[on_fit_start] world_size={ws}, num_devices={ndv}, num_nodes={nd}, "
-                f"global_rank={self.global_rank}, local_rank={self.local_rank}")
-            if ws is not None:
-                self.config.TRAINER.WORLD_SIZE = int(ws)
-        except Exception:
-            pass
+    #     # The predictions are concatenated [0->1, 1->0]
+    #     offset_01, offset_10 = torch.chunk(pred_offset_px, 2, dim=0)
+    #     score_01, score_10 = torch.chunk(pred_score, 2, dim=0)
+
+    #     # --- Symmetrical Bi-directional Check ---
+    #     mkpts0_f_from_10 = mkpts0_c + offset_10 # Refined point in 0, from 1's perspective
+    #     mkpts1_f_from_10 = mkpts1_c            # Anchor in 1 (coarse center)
+
+    #     mkpts0_f_from_01 = mkpts0_c            # Anchor in 0 (coarse center)
+    #     mkpts1_f_from_01 = mkpts1_c + offset_01 # Refined point in 1, from 0's perspective
+
+    #     # Choose the entire coordinate pair based on the more confident direction
+    #     use_01_mask = score_01 > score_10
+    #     mkpts0_f = torch.where(use_01_mask.unsqueeze(1), mkpts0_f_from_01, mkpts0_f_from_10)
+    #     mkpts1_f = torch.where(use_01_mask.unsqueeze(1), mkpts1_f_from_01, mkpts1_f_from_10)
+        
+    #     # Final confidence scores
+    #     final_score = torch.where(use_01_mask, score_01, score_10)
+        
+    #     # --- Filtering ---
+    #     # 1. Coarse-level confidence threshold
+    #     conf_mask = mconf > self.config['edm']['coarse']['mconf_thr']
+        
+    #     # 2. Fine-level confidence threshold (from sigma)
+    #     conf_mask &= final_score > self.config['edm']['fine']['sigma_thr']
+
+    #     # 3. Border removal
+    #     border_rm = self.config['edm']['coarse']['border_rm']
+    #     h0, w0 = data['hw0_i']
+    #     h1, w1 = data['hw1_i']
+    #     conf_mask &= (mkpts0_f[:, 0] >= border_rm) & (mkpts0_f[:, 0] < w0 - border_rm) & \
+    #                   (mkpts0_f[:, 1] >= border_rm) & (mkpts0_f[:, 1] < h0 - border_rm) & \
+    #                   (mkpts1_f[:, 0] >= border_rm) & (mkpts1_f[:, 0] < w1 - border_rm) & \
+    #                   (mkpts1_f[:, 1] >= border_rm) & (mkpts1_f[:, 1] < h1 - border_rm)
+
+    #     # Update data dictionary with the final, filtered matches
+    #     data.update({
+    #         'm_bids': data['b_ids'][conf_mask],
+    #         'mkpts0_f': mkpts0_f[conf_mask],
+    #         'mkpts1_f': mkpts1_f[conf_mask],
+    #         'mconf': mconf[conf_mask],
+    #         'mconf_fine': final_score[conf_mask]
+    #     })
+
+    # def on_fit_start(self):
+    #     # Ensure depth extractor is on the same device as the module
+    #     if getattr(self, "_depth_extractor", None) is not None:
+    #         try:
+    #             self._depth_extractor.to(self.device)
+    #         except Exception as e:
+    #             print(f"[on_fit_start] failed to move depth extractor to {self.device}: {e}")
+    #     try:
+    #         ws = getattr(self.trainer, "world_size", None)
+    #         nd = getattr(self.trainer, "num_nodes", None)
+    #         ndv = getattr(self.trainer, "num_devices", None)
+    #         print(f"[on_fit_start] world_size={ws}, num_devices={ndv}, num_nodes={nd}, "
+    #             f"global_rank={self.global_rank}, local_rank={self.local_rank}")
+    #         if ws is not None:
+    #             self.config.TRAINER.WORLD_SIZE = int(ws)
+    #     except Exception:
+    #         pass

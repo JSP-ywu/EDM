@@ -8,6 +8,8 @@ from loguru import logger as loguru_logger
 from src.config.default import get_cfg_defaults
 from src.utils.profiler import build_profiler
 
+from lightning.pytorch.loggers import WandbLogger
+
 from src.lightning.data import MultiSceneDataModule
 from src.lightning.lightning_edm import PL_EDM
 
@@ -65,6 +67,9 @@ def parse_args():
     parser.add_argument(
         "--H", type=int, default=None, help="image height"
     )
+    parser.add_argument(
+        "--exp_name", type=str, default=None, help="Test name"
+    )
     
 
     return parser.parse_args()
@@ -101,6 +106,14 @@ if __name__ == "__main__":
         print("check input ckpt_path.")
         sys.exit(1)
 
+    logger = WandbLogger(
+        project="edm_test",
+        name=args.exp_name,
+        save_dir="logs/wandb_logs",
+        log_model=False,
+        # default_hp_metric=False,
+    )
+
     # lightning module
     profiler = build_profiler(args.profiler_name)
     model = PL_EDM(
@@ -122,7 +135,7 @@ if __name__ == "__main__":
         strategy="ddp",
         num_nodes=args.num_nodes,
         benchmark=True,
-        logger=False,
+        logger=logger,
         use_distributed_sampler=False,
         profiler=profiler,
     )

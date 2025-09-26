@@ -7,9 +7,9 @@ from einops.einops import rearrange
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
-torch.set_float32_matmul_precision("highest")  # highest (defualt) high medium
+torch.set_float32_matmul_precision("highest")
 
-# ADDED: A simple head to predict matchability from fine features
+
 class SaliencyHead(nn.Module):
     def __init__(self, feature_dim):
         super().__init__()
@@ -42,7 +42,7 @@ class EDM(nn.Module):
         # self.fine_matching = FineMatchingV2(config)
 
         # ADDED: Saliency head to predict matchability from fine features
-        fine_feature_dim = config["backbone"]["block_dims"][-3]
+        fine_feature_dim = config["backbone"]["block_dims"][-1]
         self.saliency_head = SaliencyHead(fine_feature_dim)
 
     def forward(self, data):
@@ -85,11 +85,6 @@ class EDM(nn.Module):
             f8_1, f16_1, f32_1, feat_f1 = feats1
             ms_feats = f8_0, f16_0, f32_0, f8_1, f16_1, f32_1
 
-        # --- ADDED: Predict Saliency Score Map ---
-        # Predict the "matchability" score for each fine-level pixel
-        saliency_map0 = self.saliency_head(feat_f0) # Shape: [B, 1, H/8, W/8]
-        saliency_map1 = self.saliency_head(feat_f1)
-
         mask_c0 = mask_c1 = None  # mask is useful in training
         if "mask0" in data:
             mask_c0, mask_c1 = data["mask0"], data["mask1"]
@@ -109,9 +104,6 @@ class EDM(nn.Module):
                                      hidden0=hidden0, hidden1=hidden1,
                                      inject_hidden=self.config['use_hidden'])
         
-        # ADDED: Store original 2D feature shapes before flattening
-        h_c0, w_c0 = feat_c0.shape[2:]
-        h_c1, w_c1 = feat_c1.shape[2:]
         
         data.update(
             {
@@ -121,6 +113,13 @@ class EDM(nn.Module):
                 "hw1_f": feat_c1.shape[2:] * self.config["local_resolution"],
             }
         )
+        feat_c0_2d, feat_c1_2d = feat_c0, feat_c1
+
+        # context(correlation)-aware coarse feature saliency map
+        s_map0 = self.saliency_head(feat_c0_2d) # [B, 1, Hc, Wc]
+        s_map1 = self.saliency_head(feat_c1_2d) # [B, 1, Hc, Wc]
+
+        # Flatten
         feat_c0 = rearrange(feat_c0, "n c h w -> n (h w) c")
         feat_c1 = rearrange(feat_c1, "n c h w -> n (h w) c")
         feat_f0 = rearrange(feat_f0, "n c h w -> n (h w) c")
@@ -146,6 +145,13 @@ class EDM(nn.Module):
                              1) if mask_c1 is not None else mask_c1
             ),
         )
+
+        # Re-weight the confidnce matrix using saliency
+        saliency0 = rearrange(s_map0, 'n c h w -> n (h w) c').sigmoid() # [B, L, 1]
+        saliency1 = rearrange(s_map1, 'n c h w -> n (h w) c').sigmoid() # [B, S, 1]
+
+        conf_matrix = conf_matrix * (saliency0 @ saliency1.transpose(1, 2))
+        data['conf_matrix'] = conf_matrix
 
         if self.deploy:
             k = self.topk
@@ -202,40 +208,41 @@ class EDM(nn.Module):
             )
         # -------
         # 4. Fine-Level Matching
-        # K0 = data["i_ids"].shape[0] // data["bs"]
-        # K1 = data["j_ids"].shape[0] // data["bs"]
-        # feat_f0 = feat_f0[data["b_ids"], data["i_ids"]
-        #                   ].reshape(data["bs"], K0, -1)
-        # feat_f1 = feat_f1[data["b_ids"], data["j_ids"]
-        #                   ].reshape(data["bs"], K1, -1)
-        # feat_c0 = feat_c0[data["b_ids"], data["i_ids"]
-        #                   ].reshape(data["bs"], K0, -1)
-        # feat_c1 = feat_c1[data["b_ids"], data["j_ids"]
-        #                   ].reshape(data["bs"], K1, -1)
+        K0 = data["i_ids"].shape[0] // data["bs"]
+        K1 = data["j_ids"].shape[0] // data["bs"]
+        feat_f0 = feat_f0[data["b_ids"], data["i_ids"]
+                          ].reshape(data["bs"], K0, -1)
+        feat_f1 = feat_f1[data["b_ids"], data["j_ids"]
+                          ].reshape(data["bs"], K1, -1)
+        feat_c0 = feat_c0[data["b_ids"], data["i_ids"]
+                          ].reshape(data["bs"], K0, -1)
+        feat_c1 = feat_c1[data["b_ids"], data["j_ids"]
+                          ].reshape(data["bs"], K1, -1)
 
-        # if self.bi_directional_refine:
-        #     # Bidirectional Refinement
-        #     offset, score = self.fine_matching(
-        #         torch.cat([feat_f0, feat_f1], dim=1),
-        #         torch.cat([feat_f1, feat_f0], dim=1),
-        #         torch.cat([feat_c0, feat_c1], dim=1),
-        #         torch.cat([feat_c1, feat_c0], dim=1),
-        #         data,
-        #     )
-        # else:
-        #     offset, score = self.fine_matching(
-        #         feat_f0, feat_f1, feat_c0, feat_c1, data)
+        if self.bi_directional_refine:
+            # Bidirectional Refinement
+            offset, score = self.fine_matching(
+                torch.cat([feat_f0, feat_f1], dim=1),
+                torch.cat([feat_f1, feat_f0], dim=1),
+                torch.cat([feat_c0, feat_c1], dim=1),
+                torch.cat([feat_c1, feat_c0], dim=1),
+                data,
+            )
+        else:
+            offset, score = self.fine_matching(
+                feat_f0, feat_f1, feat_c0, feat_c1, data)
 
-        # if self.deploy:
-        #     if self.bi_directional_refine:
-        #         fine_offset01, fine_offset10 = offset.chunk(2)
-        #         fine_score01, fine_score10 = score.unsqueeze(dim=1).chunk(2)
-        #         output = torch.cat(
-        #             [mkpts0_c, mkpts1_c, fine_offset01, fine_offset10, fine_score01, fine_score10, mconf.unsqueeze(dim=1)], 1) # [K, 11]
-        #     else:
-        #         output = torch.cat(
-        #             [mkpts0_c, mkpts1_c, offset, score, mconf.unsqueeze(dim=1)], 1)
-        #     return output
+        if self.deploy:
+            if self.bi_directional_refine:
+                fine_offset01, fine_offset10 = offset.chunk(2)
+                fine_score01, fine_score10 = score.unsqueeze(dim=1).chunk(2)
+                output = torch.cat(
+                    [mkpts0_c, mkpts1_c, fine_offset01, fine_offset10, fine_score01, fine_score10, mconf.unsqueeze(dim=1)], 1) # [K, 11]
+            else:
+                output = torch.cat(
+                    [mkpts0_c, mkpts1_c, offset, score, mconf.unsqueeze(dim=1)], 1)
+            return output
+        return data
         # -------
 
         # -------
@@ -278,78 +285,6 @@ class EDM(nn.Module):
         #     return torch.cat(
         #         [mkpts0_f[mask], mkpts1_f[mask], offset_01, score_01, mconf[mask].unsqueeze(dim=1)], 1)
         # return data
-                # --- Dynamic Feature Selection Logic ---
-        # Instead of just taking the center point's feature, we find a better one
-        # using the saliency map. This logic is fully vectorized (no Python loops).
-        # ---------
-
-        # a. Get coarse match indices and feature map dimensions
-        b_ids, i_ids, j_ids = data['b_ids'], data['i_ids'], data['j_ids']
-        bs = data['bs']
-        h_c, w_c = data['hw0_c']
-        h_f, w_f = h_c * self.local_resolution, w_c * self.local_resolution
-
-        # b. Get the 8x8 saliency patches corresponding to each coarse match
-        # Unfold the saliency map into non-overlapping 8x8 patches
-        saliency_patches0 = F.unfold(saliency_map0, kernel_size=self.local_resolution, stride=self.local_resolution)
-        # Shape: [B, 1 * 8 * 8, Hc * Wc] -> [B, 64, L]
-        saliency_patches1 = F.unfold(saliency_map1, kernel_size=self.local_resolution, stride=self.local_resolution)
-
-        # c. Find the location of the max value (local offset) within each patch
-        local_argmax_idx0 = torch.argmax(saliency_patches0, dim=1) # Shape: [B, L]
-        local_argmax_idx1 = torch.argmax(saliency_patches1, dim=1) # Shape: [B, L]
-        
-        # d. Gather the local offsets for our M coarse matches
-        M = b_ids.shape[0]
-        local_offset_idx0 = local_argmax_idx0[b_ids, i_ids] # Shape: [M]
-        local_offset_idx1 = local_argmax_idx1[b_ids, j_ids] # Shape: [M]
-
-        # Convert 1D local offset index to 2D local offset (dy, dx)
-        local_offset_y0 = torch.div(local_offset_idx0, self.local_resolution, rounding_mode='floor')
-        local_offset_x0 = local_offset_idx0 % self.local_resolution
-        
-        local_offset_y1 = torch.div(local_offset_idx1, self.local_resolution, rounding_mode='floor')
-        local_offset_x1 = local_offset_idx1 % self.local_resolution
-
-        # e. Calculate the new global 1D indices for the fine feature map
-        coarse_coords0_x = i_ids % w_c
-        coarse_coords0_y = torch.div(i_ids, w_c, rounding_mode='floor')
-        new_fine_coords_x0 = coarse_coords0_x * self.local_resolution + local_offset_x0
-        new_fine_coords_y0 = coarse_coords0_y * self.local_resolution + local_offset_y0
-        new_fine_indices0 = new_fine_coords_y0 * w_f + new_fine_coords_x0
-        
-        coarse_coords1_x = j_ids % w_c
-        coarse_coords1_y = torch.div(j_ids, w_c, rounding_mode='floor')
-        new_fine_coords_x1 = coarse_coords1_x * self.local_resolution + local_offset_x1
-        new_fine_coords_y1 = coarse_coords1_y * self.local_resolution + local_offset_y1
-        new_fine_indices1 = new_fine_coords_y1 * w_f + new_fine_coords_x1
-
-        # f. Gather the features from the new, dynamically selected points
-        # feat_f0 and feat_f1 are flat [B, L_fine, C]
-        feat_f0_dynamic = torch.gather(feat_f0, 1, new_fine_indices0.unsqueeze(1).unsqueeze(2).expand(-1, -1, feat_f0.shape[2]))
-        feat_f1_dynamic = torch.gather(feat_f1, 1, new_fine_indices1.unsqueeze(1).unsqueeze(2).expand(-1, -1, feat_f1.shape[2]))
-
-        # Also get coarse features for the original FineMatching module
-        K = M // bs
-        feat_c0_original = feat_c0[b_ids, i_ids].view(bs, K, -1)
-        feat_c1_original = feat_c1[b_ids, j_ids].view(bs, K, -1)
-        
-        feat_f0_dynamic = feat_f0_dynamic.view(bs, K, -1)
-        feat_f1_dynamic = feat_f1_dynamic.view(bs, K, -1)
-
-        # Call the original fine_matching module with the 'upgraded' feature vectors
-        if self.bi_directional_refine:
-            offset, score = self.fine_matching(
-                torch.cat([feat_f0_dynamic, feat_f1_dynamic], dim=1),
-                torch.cat([feat_f1_dynamic, feat_f0_dynamic], dim=1),
-                torch.cat([feat_c0_original, feat_c1_original], dim=1),
-                torch.cat([feat_c1_original, feat_c0_original], dim=1),
-                data,
-            )
-        else:
-            offset, score = self.fine_matching(
-                feat_f0_dynamic, feat_f1_dynamic, feat_c0_original, feat_c1_original, data)
-        return data # Return data for the loss function
     
     def load_state_dict(self, state_dict, *args, **kwargs):
         for k in list(state_dict.keys()):

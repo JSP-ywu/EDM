@@ -19,6 +19,14 @@ batch_size=1
 ckpt_path="weights/edm_outdoor.ckpt"
 size=1152 # follow ELoFTR's setting
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --exp_name=*) exp_name="${1#*=}"; shift ;;
+    --exp_name)   exp_name="$2"; shift 2 ;;
+    *)      shift ;;  # ignore other args
+  esac
+done
+
 python -u ./test.py \
     ${data_cfg_path} \
     ${main_cfg_path} \

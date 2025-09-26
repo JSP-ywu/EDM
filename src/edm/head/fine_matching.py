@@ -301,9 +301,10 @@ class FineMatching(nn.Module):
                     "pred_score": 1.0 - torch.mean(sigma, dim=-1).flatten(),
                 }
             )
-
-        if not self.deploy:
-            self.final_matching_selection(data)
+        
+        # Uncomment when debugging is over
+        # if not self.deploy:
+        #     self.final_matching_selection(data)
 
         return data["pred_coord"], data["pred_score"]
 
@@ -383,6 +384,8 @@ class FineMatching(nn.Module):
                 "mconf": data["mconf"][mask],
             }
         )
+
+# FineMatchingV2 is used for skipping coarse matching
 
 class FineMatchingV2(nn.Module):
     """
