@@ -16,7 +16,7 @@ n_gpus_per_node=1
 torch_num_workers=8
 batch_size=1
 
-ckpt_path="weights/edm_outdoor.ckpt"
+ckpt_path="logs/wandb_logs/edm_reproduce/checkpoints"
 size=1152 # follow ELoFTR's setting
 
 while [[ $# -gt 0 ]]; do

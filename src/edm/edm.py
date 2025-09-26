@@ -42,8 +42,8 @@ class EDM(nn.Module):
         # self.fine_matching = FineMatchingV2(config)
 
         # ADDED: Saliency head to predict matchability from fine features
-        fine_feature_dim = config["backbone"]["block_dims"][-1]
-        self.saliency_head = SaliencyHead(fine_feature_dim)
+        # fine_feature_dim = config["backbone"]["block_dims"][-1]
+        # self.saliency_head = SaliencyHead(fine_feature_dim)
 
     def forward(self, data):
         """
@@ -116,8 +116,8 @@ class EDM(nn.Module):
         feat_c0_2d, feat_c1_2d = feat_c0, feat_c1
 
         # context(correlation)-aware coarse feature saliency map
-        s_map0 = self.saliency_head(feat_c0_2d) # [B, 1, Hc, Wc]
-        s_map1 = self.saliency_head(feat_c1_2d) # [B, 1, Hc, Wc]
+        # s_map0 = self.saliency_head(feat_c0_2d) # [B, 1, Hc, Wc]
+        # s_map1 = self.saliency_head(feat_c1_2d) # [B, 1, Hc, Wc]
 
         # Flatten
         feat_c0 = rearrange(feat_c0, "n c h w -> n (h w) c")
@@ -147,11 +147,11 @@ class EDM(nn.Module):
         )
 
         # Re-weight the confidnce matrix using saliency
-        saliency0 = rearrange(s_map0, 'n c h w -> n (h w) c').sigmoid() # [B, L, 1]
-        saliency1 = rearrange(s_map1, 'n c h w -> n (h w) c').sigmoid() # [B, S, 1]
+        # saliency0 = rearrange(s_map0, 'n c h w -> n (h w) c').sigmoid() # [B, L, 1]
+        # saliency1 = rearrange(s_map1, 'n c h w -> n (h w) c').sigmoid() # [B, S, 1]
 
-        conf_matrix = conf_matrix * (saliency0 @ saliency1.transpose(1, 2))
-        data['conf_matrix'] = conf_matrix
+        # conf_matrix = conf_matrix * (saliency0 @ saliency1.transpose(1, 2))
+        # data['conf_matrix'] = conf_matrix
 
         if self.deploy:
             k = self.topk
