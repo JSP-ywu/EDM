@@ -347,6 +347,11 @@ class PL_EDM(pl.LightningModule):
                     for i in range(50):
                         batch = self.matcher(batch)
             self.warmup = True
+        
+        # Compute supervision due to metrics
+        with self.profiler.profile("Compute coarse supervision"):
+            with torch.autocast(enabled=False, device_type="cuda"):
+                compute_supervision_coarse(batch, self.config)
 
         torch.cuda.synchronize()
         if self.config.EDM.HALF:
@@ -510,36 +515,37 @@ class PL_EDM(pl.LightningModule):
             )
             if self.dump_dir is not None:
                 for i in range(min(self.n_vals_plot, len(dumps))):
-                    dump_item = dumps[i]
-                    batch_for_plot = {
-                        'image0': torch.from_numpy(dump_item['image0']), # Assuming you save images in dump
-                        'image1': torch.from_numpy(dump_item['image1']),
-                        'dataset_name': [self.config.DATASET.TEST_DATASET]
-                    }
-                    
-                    # Plot rejected matches
-                    fig_rejected = make_matching_figures(
-                        batch_for_plot, self.config, mode='rejected',
-                        mkpts0=dump_item['initial_mkpts0_c'],
-                        mkpts1=dump_item['initial_mkpts1_c'],
-                        mask=dump_item['rejected_mask']
-                    )
-                    self.logger.experiment.log(
-                        {f"test_analysis/rejected/pair-{i}": fig_rejected['rejected'][0]},
-                        step=self.global_step
-                    )
+                    if i % 50 == 0:
+                        dump_item = dumps[i]
+                        batch_for_plot = {
+                            'image0': torch.from_numpy(dump_item['image0']), # Assuming you save images in dump
+                            'image1': torch.from_numpy(dump_item['image1']),
+                            'dataset_name': [self.config.DATASET.TEST_DATASET]
+                        }
+                        
+                        # Plot rejected matches
+                        fig_rejected = make_matching_figures(
+                            batch_for_plot, self.config, mode='rejected',
+                            mkpts0=dump_item['initial_mkpts0_c'],
+                            mkpts1=dump_item['initial_mkpts1_c'],
+                            mask=dump_item['rejected_mask']
+                        )
+                        self.logger.experiment.log(
+                            {f"test_analysis/rejected/pair-{i}": fig_rejected['rejected'][0]},
+                            step=self.global_step
+                        )
 
-                    # Plot failure cases
-                    fig_failure = make_matching_figures(
-                        batch_for_plot, self.config, mode='failure',
-                        mkpts0=dump_item['final_mkpts0_f'],
-                        mkpts1=dump_item['final_mkpts1_f'],
-                        epi_errs=dump_item['final_epi_errs']
-                    )
-                    self.logger.experiment.log(
-                        {f"test_analysis/failure/pair-{i}": fig_failure['failure'][0]},
-                        step=self.global_step
-                    )
+                        # Plot failure cases
+                        fig_failure = make_matching_figures(
+                            batch_for_plot, self.config, mode='failure',
+                            mkpts0=dump_item['final_mkpts0_f'],
+                            mkpts1=dump_item['final_mkpts1_f'],
+                            epi_errs=dump_item['final_epi_errs']
+                        )
+                        self.logger.experiment.log(
+                            {f"test_analysis/failure/pair-{i}": fig_failure['failure'][0]},
+                            step=self.global_step
+                        )
                 np.save(Path(self.dump_dir) / "EDM_pred_eval", dumps)
 
         self.test_step_outputs.clear()
