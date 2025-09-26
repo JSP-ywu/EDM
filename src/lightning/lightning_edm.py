@@ -131,6 +131,7 @@ class PL_EDM(pl.LightningModule):
         with self.profiler.profile("EDM"):
             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
                 batch = self.matcher(batch)
+                _ = self._post_process_and_filter(batch)
 
         # with self.profiler.profile("Compute fine supervision"):
         #     with torch.autocast(enabled=False, device_type='cuda'):
@@ -183,7 +184,7 @@ class PL_EDM(pl.LightningModule):
                 )
             # figures
             if self.config.TRAINER.ENABLE_PLOTTING:
-                self._filter_and_compute_final_matches(batch)
+                # _ = self._post_process_and_filter(batch)
                 compute_symmetrical_epipolar_errors(
                     batch
                 )  # compute epi_errs for each match
@@ -235,7 +236,7 @@ class PL_EDM(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         self._trainval_inference(batch)
 
-        # self._filter_and_compute_final_matches(batch)
+        # _ = self._post_process_and_filter(batch)
 
         ret_dict, _ = self._compute_metrics(batch)
 
@@ -595,7 +596,7 @@ class PL_EDM(pl.LightningModule):
         # De-normalize offset to pixel scale
         offset = pred_coord * self.matcher.local_resolution
         
-        if self.config['edm']['fine']['bi_directional_refine']:
+        if self.config.EDM.FINE.BI_DIRECTIONAL_REFINE:
             offset_01, offset_10 = torch.chunk(offset, 2, dim=0)
             score_01, score_10 = torch.chunk(data['pred_score'], 2, dim=0)
 
@@ -610,10 +611,10 @@ class PL_EDM(pl.LightningModule):
             final_score = data['pred_score']
 
         # --- Filtering ---
-        final_mask = mconf > self.config['edm']['coarse']['mconf_thr']
-        final_mask &= final_score > self.config['edm']['fine']['sigma_thr']
+        final_mask = mconf > self.config.EDM.COARSE.MCONF_THR
+        final_mask &= final_score > self.config.EDM.FINE.SIGMA_THR
 
-        border_rm = self.config['edm']['coarse']['border_rm']
+        border_rm = self.config.EDM.COARSE.BORDER_RM
         h0, w0 = data['hw0_i']
         h1, w1 = data['hw1_i']
         final_mask &= (mkpts0_f[:, 0] >= border_rm) & (mkpts0_f[:, 0] < w0 - border_rm) & \
@@ -630,6 +631,7 @@ class PL_EDM(pl.LightningModule):
         })
         
         return final_mask
+    
     # @torch.no_grad()
     # def _filter_and_compute_final_matches(self, data):
     #     """
