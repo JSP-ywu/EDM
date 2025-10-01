@@ -135,8 +135,50 @@ def _make_confidence_figure(data, b_id):
     # TODO: Implement confidence figure
     raise NotImplementedError()
 
+def _make_rejected_figure(data, b_id, mkpts0, mkpts1, mask, **kwargs):
+    img0 = (data["image0"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    img1 = (data["image1"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    
+    kpts0 = mkpts0[mask]
+    kpts1 = mkpts1[mask]
 
-def make_matching_figures(data, config, mode="evaluation"):
+    if "scale0" in data:
+        kpts0 = kpts0 / data["scale0"][b_id].cpu().numpy()[[1, 0]]
+        kpts1 = kpts1 / data["scale1"][b_id].cpu().numpy()[[1, 0]]
+
+    color = np.array([[1.0, 0.0, 0.0, 1.0]] * len(kpts0))
+    
+    text = [f"#Rejected Matches {len(kpts0)}"]
+
+    figure = make_matching_figure(img0, img1, kpts0, kpts1, color, text=text)
+    return figure
+
+def _make_failure_figure(data, b_id, mkpts0, mkpts1, epi_errs, **kwargs):
+    img0 = (data["image0"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    img1 = (data["image1"][b_id][0].cpu().numpy() * 255).round().astype(np.int32)
+    
+    kpts0 = mkpts0
+    kpts1 = mkpts1
+
+    if "scale0" in data:
+        kpts0 = kpts0 / data["scale0"][b_id].cpu().numpy()[[1, 0]]
+        kpts1 = kpts1 / data["scale1"][b_id].cpu().numpy()[[1, 0]]
+
+    conf_thr = _compute_conf_thresh(data)
+    failure_mask = epi_errs > conf_thr
+    
+    kpts0_fail = kpts0[failure_mask]
+    kpts1_fail = kpts1[failure_mask]
+    
+    color = error_colormap(epi_errs[failure_mask], conf_thr, alpha=1.0)
+    
+    text = [f"#Failure Matches {len(kpts0_fail)} / {len(kpts0)}"]
+
+    figure = make_matching_figure(img0, img1, kpts0_fail, kpts1_fail, color, text=text)
+    return figure
+
+
+def make_matching_figures(data, config, mode="evaluation", **kwargs):
     """Make matching figures for a batch.
 
     Args:
@@ -145,7 +187,7 @@ def make_matching_figures(data, config, mode="evaluation"):
     Returns:
         figures (Dict[str, List[plt.figure]]
     """
-    assert mode in ["evaluation", "confidence", "gt"]  # 'confidence'
+    assert mode in ["evaluation", "confidence", "gt", "rejected", "failure"]
     figures = {mode: []}
     for b_id in range(data["image0"].size(0)):
         if mode == "evaluation":
@@ -154,6 +196,10 @@ def make_matching_figures(data, config, mode="evaluation"):
             )
         elif mode == "confidence":
             fig = _make_confidence_figure(data, b_id)
+        elif mode == "rejected":
+            fig = _make_rejected_figure(data, b_id, **kwargs)
+        elif mode == "failure":
+            fig = _make_failure_figure(data, b_id, **kwargs)
         else:
             raise ValueError(f"Unknown plot mode: {mode}")
         figures[mode].append(fig)
@@ -161,7 +207,9 @@ def make_matching_figures(data, config, mode="evaluation"):
 
 
 def dynamic_alpha(
-    n_matches, milestones=[0, 300, 1000, 2000], alphas=[1.0, 0.8, 0.4, 0.2]
+    n_matches,
+    milestones=[0, 300, 1000, 2000],
+    alphas=[1.0, 0.8, 0.4, 0.2]
 ):
     if n_matches == 0:
         return 1.0

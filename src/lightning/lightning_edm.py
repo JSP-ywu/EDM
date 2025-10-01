@@ -295,31 +295,64 @@ class PL_EDM(pl.LightningModule):
         if not self.warmup:
             if self.config.EDM.HALF:
                 for i in range(50):
-                    self.matcher(batch)
+                    batch = self.matcher(batch)
             else:
                 with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
                     for i in range(50):
-                        self.matcher(batch)
+                        batch = self.matcher(batch)
             self.warmup = True
+        
+        # Compute supervision due to metrics
+        with self.profiler.profile("Compute coarse supervision"):
+            with torch.autocast(enabled=False, device_type="cuda"):
+                compute_supervision_coarse(batch, self.config)
 
         torch.cuda.synchronize()
         if self.config.EDM.HALF:
             self.start_event.record()
-            self.matcher(batch)
+            batch = self.matcher(batch)
             self.end_event.record()
             torch.cuda.synchronize()
             self.total_ms += self.start_event.elapsed_time(self.end_event)
         else:
             with torch.autocast(enabled=self.config.EDM.MP, device_type="cuda"):
                 self.start_event.record()
-                self.matcher(batch)
+                batch = self.matcher(batch)
                 self.end_event.record()
                 torch.cuda.synchronize()
                 self.total_ms += self.start_event.elapsed_time(self.end_event)
 
-        ret_dict, rel_pair_names = self._compute_metrics(batch)
+        # --- Analysis Data Preparation ---
+        # 1. Store initial top-k coarse matches before filtering
+        initial_mkpts0_c = batch['mkpts0_c'].clone()
+        initial_mkpts1_c = batch['mkpts1_c'].clone()
+        initial_b_ids = batch['b_ids'].clone()
+        initial_i_ids = batch['i_ids'].clone()
+        initial_j_ids = batch['j_ids'].clone()
+
+        # 2. Compute final matches and get the filter mask
+        final_keep_mask = self._post_process_and_filter(batch)
+
+        # 3. Compute metrics on the FINAL filtered matches
+        ret_dict, rel_pair_names = self._compute_metrics(batch) # This now uses the filtered matches
+
+        # 4. Calculate Coarse Precision using INITIAL matches
+        conf_matrix_gt = batch['conf_matrix_gt']
+        gt_vals = conf_matrix_gt[initial_b_ids, initial_i_ids, initial_j_ids]
+        coarse_precision = gt_vals.mean() if len(gt_vals) > 0 else torch.tensor(0., device=gt_vals.device)
+        ret_dict['metrics']['coarse_precision'] = [coarse_precision.cpu().numpy()]
+
+        # 5. Calculate acceptance/rejected ratio
+        num_initial = len(initial_mkpts0_c)
+        num_final = len(batch['mkpts0_f'])
+        acceptance_ratio = num_final / num_initial if num_initial > 0 else 0.
+        rejected_ratio = 1. - acceptance_ratio
+        ret_dict['metrics']['acceptance_ratio'] = [np.array(acceptance_ratio)]
+        ret_dict['metrics']['rejected_ratio'] = [np.array(rejected_ratio)]
+
 
         if self.dump_dir is not None:
+            compute_symmetrical_epipolar_errors(batch)
             with self.profiler.profile("dump_results"):
                 # dump results for further analysis
                 keys_to_save = {"mkpts0_f", "mkpts1_f", "mconf", "epi_errs"}
@@ -335,6 +368,19 @@ class PL_EDM(pl.LightningModule):
                         item[key] = batch[key][mask].cpu().numpy()
                     for key in ["R_errs", "t_errs", "inliers"]:
                         item[key] = batch[key][b_id]
+
+                    initial_b_mask = initial_b_ids == b_id
+                    final_b_mask = batch['m_bids'] == b_id # m_bids is now filtered
+
+                    item['initial_mkpts0_c'] = initial_mkpts0_c[initial_b_mask].cpu().numpy()
+                    item['initial_mkpts1_c'] = initial_mkpts1_c[initial_b_mask].cpu().numpy()
+                    item['rejected_mask'] = ~final_keep_mask[initial_b_mask].cpu().numpy()
+                    
+                    item['final_mkpts0_f'] = batch['mkpts0_f'][final_b_mask].cpu().numpy()
+                    item['final_mkpts1_f'] = batch['mkpts1_f'][final_b_mask].cpu().numpy()
+                    item['final_epi_errs'] = batch['epi_errs'][final_b_mask].cpu().numpy()
+                    item['image0'] = batch['image0'][b_id].cpu().numpy()
+                    item['image1'] = batch['image1'][b_id].cpu().numpy()
                     dumps.append(item)
                 ret_dict["dumps"] = dumps
 
@@ -366,14 +412,103 @@ class PL_EDM(pl.LightningModule):
             val_metrics_4tb = aggregate_metrics(
                 metrics, self.config.TRAINER.EPI_ERR_THR, config=self.config
             )
+            if 'coarse_precision' in metrics:
+                val_metrics_4tb['coarse_precision'] = np.mean(metrics['coarse_precision'])
+            if 'acceptance_ratio' in metrics:
+                val_metrics_4tb['acceptance_ratio'] = np.mean(metrics['acceptance_ratio'])
+            if 'rejected_ratio' in metrics:
+                val_metrics_4tb['rejected_ratio'] = np.mean(metrics['rejected_ratio'])
 
-            logger.info("\n" + pprint.pformat(val_metrics_4tb))
+            logger.info("\\n" + pprint.pformat(val_metrics_4tb))
+            
             print(
                 "Averaged Matching time over 1500 pairs: {:.2f} ms".format(
                     self.total_ms / 1500
                 )
             )
             if self.dump_dir is not None:
+                for i in range(min(self.n_vals_plot, len(dumps))):
+                    dump_item = dumps[i]
+                    batch_for_plot = {
+                        'image0': torch.from_numpy(dump_item['image0']).unsqueeze(0), # Assuming you save images in dump
+                        'image1': torch.from_numpy(dump_item['image1']).unsqueeze(0),
+                        'dataset_name': [self.config.DATASET.TEST_DATA_SOURCE]
+                    }
+                    
+                    # Plot rejected matches
+                    fig_rejected = make_matching_figures(
+                        batch_for_plot, self.config, mode='rejected',
+                        mkpts0=dump_item['initial_mkpts0_c'],
+                        mkpts1=dump_item['initial_mkpts1_c'],
+                        mask=dump_item['rejected_mask']
+                    )
+                    if self.logger is not None and self.logger.experiment is not None:
+                        self.logger.experiment.log(
+                            {f"test_analysis/rejected/pair-{i}": fig_rejected['rejected'][0]},
+                            step=self.global_step
+                        )
+
+                    # Plot failure cases
+                    fig_failure = make_matching_figures(
+                        batch_for_plot, self.config, mode='failure',
+                        mkpts0=dump_item['final_mkpts0_f'],
+                        mkpts1=dump_item['final_mkpts1_f'],
+                        epi_errs=dump_item['final_epi_errs']
+                    )
+                    if self.logger is not None and self.logger.experiment is not None:
+                        self.logger.experiment.log(
+                            {f"test_analysis/failure/pair-{i}": fig_failure['failure'][0]},
+                            step=self.global_step
+                        )
                 np.save(Path(self.dump_dir) / "EDM_pred_eval", dumps)
 
         self.test_step_outputs.clear()
+    
+    @torch.no_grad()
+    def _post_process_and_filter(self, data):
+        """
+        Takes raw model predictions from the data dict and computes the final,
+        filtered matches. This logic is moved from the original FineMatching module.
+        """
+        # Get raw predictions
+        pred_coord = data['pred_coord']
+        mconf = data['mconf']
+        
+        # De-normalize offset to pixel scale
+        offset = pred_coord * self.matcher.local_resolution
+        
+        if self.config.EDM.FINE.BI_DIRECTIONAL_REFINE:
+            offset_01, offset_10 = torch.chunk(offset, 2, dim=0)
+            score_01, score_10 = torch.chunk(data['pred_score'], 2, dim=0)
+
+            # --- Bi-directional Consistency Check ---
+            use_01_mask = score_01 > score_10
+            mkpts0_f = torch.where(use_01_mask.unsqueeze(1), data['mkpts0_c'], data['mkpts0_c'] + offset_10)
+            mkpts1_f = torch.where(use_01_mask.unsqueeze(1), data['mkpts1_c'] + offset_01, data['mkpts1_c'])
+            final_score = torch.where(use_01_mask, score_01, score_10)
+        else:
+            mkpts0_f = data['mkpts0_c']
+            mkpts1_f = data['mkpts1_c'] + offset
+            final_score = data['pred_score']
+
+        # --- Filtering ---
+        final_mask = mconf > self.config.EDM.COARSE.MCONF_THR
+        final_mask &= final_score > self.config.EDM.FINE.SIGMA_THR
+
+        border_rm = self.config.EDM.COARSE.BORDER_RM
+        h0, w0 = data['hw0_i']
+        h1, w1 = data['hw1_i']
+        final_mask &= (mkpts0_f[:, 0] >= border_rm) & (mkpts0_f[:, 0] < w0 - border_rm) & \
+                      (mkpts0_f[:, 1] >= border_rm) & (mkpts0_f[:, 1] < h0 - border_rm) & \
+                      (mkpts1_f[:, 0] >= border_rm) & (mkpts1_f[:, 0] < w1 - border_rm) & \
+                      (mkpts1_f[:, 1] >= border_rm) & (mkpts1_f[:, 1] < h1 - border_rm)
+
+        # Update data dictionary with the final, filtered matches
+        data.update({
+            'm_bids': data['b_ids'][final_mask],
+            'mkpts0_f': mkpts0_f[final_mask],
+            'mkpts1_f': mkpts1_f[final_mask],
+            'mconf': mconf[final_mask]
+        })
+        
+        return final_mask

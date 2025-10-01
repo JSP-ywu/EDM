@@ -4,7 +4,7 @@ import pprint
 import os
 import sys
 from loguru import logger as loguru_logger
-
+from lightning.pytorch.loggers import WandbLogger
 from src.config.default import get_cfg_defaults
 from src.utils.profiler import build_profiler
 
@@ -22,6 +22,9 @@ def parse_args():
     )
     parser.add_argument("data_cfg_path", type=str, help="data config path")
     parser.add_argument("main_cfg_path", type=str, help="main config path")
+    parser.add_argument(
+        "--exp_name", type=str, default=None, help="wandb experiment name"
+    )
     parser.add_argument("--gpus", default=1)
     parser.add_argument("--num_nodes", type=int, default=1)
     parser.add_argument("--accelerator", type=str, default="ddp")
@@ -101,13 +104,23 @@ if __name__ == "__main__":
         print("check input ckpt_path.")
         sys.exit(1)
 
+    # logger
+    if args.exp_name is not None:
+        logger = WandbLogger(
+            project="edm_test",
+            name=args.exp_name,
+            save_dir="logs/wandb_logs"
+        )
+    else:
+        logger = False
+
     # lightning module
     profiler = build_profiler(args.profiler_name)
     model = PL_EDM(
         config,
         pretrained_ckpt=args.ckpt_path,
         profiler=profiler,
-        # dump_dir=args.dump_dir,
+        dump_dir=args.dump_dir,
     )
     loguru_logger.info(f"EDM-lightning initialized!")
 
@@ -122,7 +135,7 @@ if __name__ == "__main__":
         strategy="ddp",
         num_nodes=args.num_nodes,
         benchmark=True,
-        logger=False,
+        logger=logger,
         use_distributed_sampler=False,
         profiler=profiler,
     )
